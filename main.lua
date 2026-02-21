@@ -19,24 +19,38 @@ Available shortcut keys:
 -- Configuration
 -- ==========================================================================
 
--- Comma-separated list of shortcuts to show in the bar (right side, bottom row).
-local MENUBAR_ITEMS         = "font,frontlight,wifi,bookmarks,toc,search"
+-- Comma-separated list of shortcuts shown in the bar (right side, bottom row).
+local MENUBAR_ITEMS = "font,frontlight,wifi,bookmarks,toc,search"
 -- Horizontal padding (px, before scaling) between icon buttons.
-local ITEM_SPACING          = 8
--- Show current time and battery level in the top-right corner.
-local SHOW_TIME_AND_BATTERY = true
--- Show book cover, title, author and progress in the top-left area.
-local SHOW_BOOK_INFO        = true
+local ITEM_SPACING  = 8
 
 -- ==========================================================================
 -- Helpers
 -- ==========================================================================
 
-local TouchMenu        = require("ui/widget/touchmenu")
-local UIManager        = require("ui/uimanager")
-local WidgetContainer  = require("ui/widget/container/widgetcontainer")
+local TouchMenu       = require("ui/widget/touchmenu")
+local UIManager       = require("ui/uimanager")
+local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local _               = require("gettext")
 
 local createHomeContent = require("home_content")
+
+-- ==========================================================================
+-- Settings
+-- ==========================================================================
+
+-- Module-level config table. All three TouchMenu patches close over this by
+-- reference, so changes in the settings-menu callbacks take effect immediately.
+local config = {}
+
+local function readConfig()
+    config.enabled               = G_reader_settings:nilOrTrue("readertoolbar_enabled")
+    config.items                 = G_reader_settings:readSetting("readertoolbar_items") or MENUBAR_ITEMS
+    config.spacing               = ITEM_SPACING
+    config.show_time_and_battery = G_reader_settings:nilOrTrue("readertoolbar_show_time_battery")
+    config.show_book_info        = G_reader_settings:nilOrTrue("readertoolbar_show_book_info")
+    config.show_back_button      = G_reader_settings:nilOrTrue("readertoolbar_show_back_button")
+end
 
 -- Identifies whether a TouchMenu instance belongs to the reader (not the
 -- file manager or any other context).
@@ -118,28 +132,27 @@ local ReaderToolbar = WidgetContainer:extend{
 }
 
 function ReaderToolbar:init()
+    if self.ui and self.ui.menu then
+        self.ui.menu:registerToMainMenu(self)
+    end
+
     -- Guard against double-patching if the plugin is somehow re-initialised.
     if TouchMenu._readertoolbar_patched then return end
     TouchMenu._readertoolbar_patched = true
 
-    local config = {
-        items                = MENUBAR_ITEMS,
-        spacing              = ITEM_SPACING,
-        show_time_and_battery = SHOW_TIME_AND_BATTERY,
-        show_book_info        = SHOW_BOOK_INFO,
-    }
+    readConfig()
 
     -- Patch 1: start every reader menu in the home (closed) state.
     local orig_init = TouchMenu.init
     TouchMenu.init = function(self_menu, ...)
         orig_init(self_menu, ...)
-        resetToHomeState(self_menu, config)
+        if config.enabled then resetToHomeState(self_menu, config) end
     end
 
     -- Patch 2: tap an already-active tab to collapse back to home.
     local orig_switchTab = TouchMenu.switchMenuTab
     TouchMenu.switchMenuTab = function(self_menu, tab_num)
-        if self_menu.cur_tab == tab_num and isReaderMenu(self_menu) then
+        if self_menu.cur_tab == tab_num and isReaderMenu(self_menu) and config.enabled then
             resetToHomeState(self_menu, config)
             return
         end
@@ -151,7 +164,7 @@ function ReaderToolbar:init()
     local orig_updateItems = TouchMenu.updateItems
     TouchMenu.updateItems = function(self_menu, target_page, target_item_id)
         orig_updateItems(self_menu, target_page, target_item_id)
-        if not isReaderMenu(self_menu) or self_menu.cur_tab then return end
+        if not config.enabled or not isReaderMenu(self_menu) or self_menu.cur_tab then return end
 
         -- Only inject if the home panel isn't already present.
         if not self_menu.item_group then return end
@@ -169,6 +182,50 @@ function ReaderToolbar:init()
             end
         end
     end
+end
+
+function ReaderToolbar:addToMainMenu(menu_items)
+    menu_items.readertoolbar = {
+        text         = _("Reader toolbar"),
+        sorting_hint = "setting",
+        sub_item_table = {
+            {
+                text         = _("Enable toolbar"),
+                checked_func = function() return config.enabled end,
+                callback     = function()
+                    config.enabled = not config.enabled
+                    G_reader_settings:saveSetting("readertoolbar_enabled", config.enabled)
+                end,
+            },
+            {
+                text         = _("Show book info"),
+                checked_func = function() return config.show_book_info end,
+                enabled_func = function() return config.enabled end,
+                callback     = function()
+                    config.show_book_info = not config.show_book_info
+                    G_reader_settings:saveSetting("readertoolbar_show_book_info", config.show_book_info)
+                end,
+            },
+            {
+                text         = _("Show time and battery"),
+                checked_func = function() return config.show_time_and_battery end,
+                enabled_func = function() return config.enabled end,
+                callback     = function()
+                    config.show_time_and_battery = not config.show_time_and_battery
+                    G_reader_settings:saveSetting("readertoolbar_show_time_battery", config.show_time_and_battery)
+                end,
+            },
+            {
+                text         = _("Show back button"),
+                checked_func = function() return config.show_back_button end,
+                enabled_func = function() return config.enabled end,
+                callback     = function()
+                    config.show_back_button = not config.show_back_button
+                    G_reader_settings:saveSetting("readertoolbar_show_back_button", config.show_back_button)
+                end,
+            },
+        },
+    }
 end
 
 return ReaderToolbar

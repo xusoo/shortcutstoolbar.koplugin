@@ -376,54 +376,66 @@ local function createHomeContent(menu, config)
         end
     end
 
-    -- ---- Bottom row: back button (left) + shortcuts icons (right) ----
+    -- ---- Bottom row: shortcuts icons (right) + optional back button (left) ----
     local shortcuts_bar = createShortcutsBar(menu, config)
 
-    local icon_size     = Screen:scaleBySize(14)
-    local back_callback = function()
-        if menu.close_callback then menu.close_callback() end
-        local ReaderUI = require("apps/reader/readerui")
-        if ReaderUI.instance then
-            local file = ReaderUI.instance.document and ReaderUI.instance.document.file
-            ReaderUI.instance:showFileManager(file)
+    local bottom_row
+    if config.show_back_button ~= false then
+        local icon_size     = Screen:scaleBySize(14)
+        local back_callback = function()
+            if menu.close_callback then menu.close_callback() end
+            local ReaderUI = require("apps/reader/readerui")
+            if ReaderUI.instance then
+                local file = ReaderUI.instance.document and ReaderUI.instance.document.file
+                ReaderUI.instance:showFileManager(file)
+            end
         end
+
+        local back_btn = HorizontalGroup:new{
+            align = "center",
+            HorizontalSpan:new{ width = Size.padding.fullscreen },
+            IconButton:new{
+                icon          = "chevron.left",
+                width         = icon_size,
+                height        = icon_size,
+                padding_top   = Screen:scaleBySize(2),
+                padding_left  = 0,
+                padding_right = Screen:scaleBySize(4),
+                callback      = back_callback,
+            },
+            Button:new{
+                text           = _("Back to library"),
+                face           = Font:getFace("smallffont"),
+                text_font_bold = false,
+                text_font_size = 18,
+                padding_h      = 0,
+                bordersize     = 0,
+                callback       = back_callback,
+            },
+        }
+
+        local bottom_h = math.max(shortcuts_bar:getSize().h, back_btn:getSize().h)
+        bottom_row = OverlapGroup:new{
+            dimen = Geom:new{ w = total_w, h = bottom_h },
+            LeftContainer:new{
+                dimen = Geom:new{ w = total_w, h = bottom_h },
+                back_btn,
+            },
+            RightContainer:new{
+                dimen = Geom:new{ w = total_w, h = bottom_h },
+                shortcuts_bar,
+            },
+        }
+    else
+        local bar_h = shortcuts_bar:getSize().h
+        bottom_row = OverlapGroup:new{
+            dimen = Geom:new{ w = total_w, h = bar_h },
+            RightContainer:new{
+                dimen = Geom:new{ w = total_w, h = bar_h },
+                shortcuts_bar,
+            },
+        }
     end
-
-    local back_btn = HorizontalGroup:new{
-        align = "center",
-        HorizontalSpan:new{ width = Size.padding.fullscreen },
-        IconButton:new{
-            icon          = "chevron.left",
-            width         = icon_size,
-            height        = icon_size,
-            padding_top   = Screen:scaleBySize(2),
-            padding_left  = 0,
-            padding_right = Screen:scaleBySize(4),
-            callback      = back_callback,
-        },
-        Button:new{
-            text           = _("Back to library"),
-            face           = Font:getFace("smallffont"),
-            text_font_bold = false,
-            text_font_size = 18,
-            padding_h      = 0,
-            bordersize     = 0,
-            callback       = back_callback,
-        },
-    }
-
-    local bottom_h = math.max(shortcuts_bar:getSize().h, back_btn:getSize().h)
-    local bottom_row = OverlapGroup:new{
-        dimen = Geom:new{ w = total_w, h = bottom_h },
-        LeftContainer:new{
-            dimen = Geom:new{ w = total_w, h = bottom_h },
-            back_btn,
-        },
-        RightContainer:new{
-            dimen = Geom:new{ w = total_w, h = bottom_h },
-            shortcuts_bar,
-        },
-    }
 
     -- ---- Combine rows ----
     local combined = VerticalGroup:new{

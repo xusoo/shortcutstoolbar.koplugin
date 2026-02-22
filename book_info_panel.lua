@@ -62,10 +62,23 @@ end
 
 --- Create the book metadata text column.
 local function buildMetaGroup(props, ui, text_w)
-    local current_page = ui:getCurrentPage() or 0
-    local total_pages  = ui.document:getPageCount() or 0
-    local percent      = (total_pages > 0)
-        and math.floor(current_page / total_pages * 100) or 0
+    local progress_text
+    local percent
+
+    if ui.pagemap and ui.pagemap:wantsPageLabels() then
+        -- Use stable (physical) page labels when the book has a page map
+        local label_cur, idx, count = ui.pagemap:getCurrentPageLabel(false)
+        local label_last = ui.pagemap:getLastPageLabel(true)
+        percent = (count and count > 0)
+            and math.floor(idx / count * 100) or 0
+        progress_text = T(_("Page %1 of %2 (%3%)"), label_cur, label_last, percent)
+    else
+        local current_page = ui:getCurrentPage() or 0
+        local total_pages  = ui.document:getPageCount() or 0
+        percent = (total_pages > 0)
+            and math.floor(current_page / total_pages * 100) or 0
+        progress_text = T(_("Page %1 of %2 (%3%)"), current_page, total_pages, percent)
+    end
 
     local small_face  = Font:getFace("smallffont")
     local medium_face = Font:getFace("ffont")
@@ -86,7 +99,7 @@ local function buildMetaGroup(props, ui, text_w)
         },
         VerticalSpan:new{ width = META_V_SEP },
         TextWidget:new{
-            text = T(_("Page %1 of %2 (%3%)"), current_page, total_pages, percent),
+            text = progress_text,
             face = small_face,
         },
     }

@@ -7,22 +7,21 @@ Adds a home panel to the reader menu (shown when no tab is selected) with:
   • Quick-access icon shortcuts (bottom-right)
   • "Back to library" button (bottom-left)
 
-Configuration
--------------
-Edit the constants below to customise the shortcuts bar.
-
-Available shortcut keys:
-  font, frontlight, wifi, bookmarks, toc, search, skim, page_browser, book_status, time, battery, spacer
+All options are configurable from the menu:
+  Tools → Reader Toolbar
 --]]
+
+local _ = require("gettext")
 
 -- ==========================================================================
 -- Configuration
 -- ==========================================================================
 
--- Comma-separated list of shortcuts shown in the bar (right side, bottom row).
-local MENUBAR_ITEMS = "font,frontlight,wifi,bookmarks,toc,search"
 -- Horizontal padding (px, before scaling) between icon buttons.
-local ITEM_SPACING  = 8
+local ITEM_SPACING = 8
+
+-- Single source of truth for all available shortcuts (key, label, icon, default).
+local SHORTCUT_ITEMS = require("shortcuts_data")
 
 -- ==========================================================================
 -- Helpers
@@ -31,7 +30,7 @@ local ITEM_SPACING  = 8
 local TouchMenu       = require("ui/widget/touchmenu")
 local UIManager       = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
-local _               = require("gettext")
+local ConfirmBox      = require("ui/widget/confirmbox")
 
 local createHomeContent = require("home_content")
 
@@ -43,13 +42,46 @@ local createHomeContent = require("home_content")
 -- reference, so changes in the settings-menu callbacks take effect immediately.
 local config = {}
 
+-- Returns whether a shortcut item is enabled, respecting its default value.
+local function isShortcutEnabled(item)
+    local setting = "readertoolbar_item_" .. item.key
+    if item.default then
+        return G_reader_settings:nilOrTrue(setting)
+    else
+        return G_reader_settings:isTrue(setting)
+    end
+end
+
 local function readConfig()
     config.enabled               = G_reader_settings:nilOrTrue("readertoolbar_enabled")
-    config.items                 = G_reader_settings:readSetting("readertoolbar_items") or MENUBAR_ITEMS
     config.spacing               = ITEM_SPACING
     config.show_time_and_battery = G_reader_settings:nilOrTrue("readertoolbar_show_time_battery")
     config.show_book_info        = G_reader_settings:nilOrTrue("readertoolbar_show_book_info")
     config.show_back_button      = G_reader_settings:nilOrTrue("readertoolbar_show_back_button")
+    -- Build the active items list, respecting the user's saved ordering.
+    -- readertoolbar_item_order is a CSV of ALL keys (enabled + disabled) in preferred order.
+    local saved_order = G_reader_settings:readSetting("readertoolbar_item_order")
+    local order_pos   = {}
+    if saved_order then
+        local pos = 1
+        for key in saved_order:gmatch("([^,]+)") do
+            order_pos[key] = pos
+            pos = pos + 1
+        end
+    end
+    -- Sort SHORTCUT_ITEMS by saved position; unseen items keep their original order at the end.
+    local sorted = {}
+    for i, item in ipairs(SHORTCUT_ITEMS) do
+        table.insert(sorted, { item = item, sort_key = order_pos[item.key] or (1000 + i) })
+    end
+    table.sort(sorted, function(a, b) return a.sort_key < b.sort_key end)
+    local active = {}
+    for _, entry in ipairs(sorted) do
+        if isShortcutEnabled(entry.item) then
+            table.insert(active, entry.item.key)
+        end
+    end
+    config.items = table.concat(active, ",")
 end
 
 -- Identifies whether a TouchMenu instance belongs to the reader (not the
@@ -196,6 +228,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                     config.enabled = not config.enabled
                     G_reader_settings:saveSetting("readertoolbar_enabled", config.enabled)
                 end,
+                separator = true,
             },
             {
                 text         = _("Show book info"),
@@ -222,6 +255,75 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 callback     = function()
                     config.show_back_button = not config.show_back_button
                     G_reader_settings:saveSetting("readertoolbar_show_back_button", config.show_back_button)
+                end,
+            },
+            {
+                text             = _("Configure shortcuts"),
+                separator = true,
+                enabled_func     = function() return config.enabled end,
+                callback     = function()
+                    local ShortcutsConfigDialog = require("shortcuts_config")
+                    -- Build enabled_keys from current active order and
+                    -- disabled_keys from all items not currently active.
+                    local enabled_keys = {}
+                    local in_enabled   = {}
+                    for key in (config.items or ""):gmatch("([^,]+)") do
+                        table.insert(enabled_keys, key)
+                        in_enabled[key] = true
+                    end
+                    -- Disabled list: follow SHORTCUT_ITEMS order, exclude enabled items.
+                    local disabled_keys = {}
+                    for _, item in ipairs(SHORTCUT_ITEMS) do
+                        if not in_enabled[item.key] then
+                            table.insert(disabled_keys, item.key)
+                        end
+                    end
+                    UIManager:show(ShortcutsConfigDialog:new{
+                        enabled_keys  = enabled_keys,
+                        disabled_keys = disabled_keys,
+                        on_save       = function(new_enabled, new_disabled)
+                            -- Persist enabled/disabled state per item.
+                            local is_enabled = {}
+                            for _, k in ipairs(new_enabled) do is_enabled[k] = true end
+                            for _, item in ipairs(SHORTCUT_ITEMS) do
+                                G_reader_settings:saveSetting(
+                                    "readertoolbar_item_" .. item.key,
+                                    is_enabled[item.key] and true or false)
+                                end
+                            -- Persist full order: enabled first, then disabled.
+                            local full_order = {}
+                            for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
+                            for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
+                            G_reader_settings:saveSetting("readertoolbar_item_order",
+                                table.concat(full_order, ","))
+                            readConfig()
+                        end,
+                    })
+                            end,
+            },
+            {
+                text      = _("Reset settings"),
+                            callback     = function()
+                    UIManager:show(ConfirmBox:new{
+                        text    = _("Reset all Reader Toolbar settings to defaults?"),
+                        ok_text = _("Reset"),
+                        ok_callback = function()
+                            local keys_to_del = {
+                                "readertoolbar_enabled",
+                                "readertoolbar_show_book_info",
+                                "readertoolbar_show_time_battery",
+                                "readertoolbar_show_back_button",
+                                "readertoolbar_item_order",
+                            }
+                            for _, item in ipairs(SHORTCUT_ITEMS) do
+                                table.insert(keys_to_del, "readertoolbar_item_" .. item.key)
+                            end
+                            for _, key in ipairs(keys_to_del) do
+                                G_reader_settings:delSetting(key)
+                            end
+                                readConfig()
+                            end,
+                        })
                 end,
             },
         },

@@ -203,22 +203,22 @@ end
 -- Shortcuts bar
 -- ==========================================================================
 
---- Build the horizontal shortcuts icon row.
-local function createShortcutsBar(menu, config)
-    local icon_size    = Screen:scaleBySize(26)
-    local padding_h    = Screen:scaleBySize(config.spacing)
+--- Build the shortcuts icon rows (wraps to multiple lines if needed).
+    local icon_size     = Screen:scaleBySize(26)
+local function createShortcutsBar(menu, config, reserved_left)
+    local padding_h     = Screen:scaleBySize(config.spacing)
     local shortcut_defs = buildShortcutDefs(menu)
+    local h_margin      = Size.padding.fullscreen
+    local avail_w       = menu.width - 2 * h_margin - (reserved_left or 0)
 
-    -- Parse the CSV config string and build the list of widgets/markers
-    local row_items = { HorizontalSpan:new{ width = Size.padding.fullscreen } }
-
+    -- 1. Build item list: { widget=..., is_spacer=bool }
+    local items = {}
     for token in string.gmatch(config.items, "([^,]+)") do
         local key = token:match("^%s*(.-)%s*$")
-
         if key == "spacer" then
-            table.insert(row_items, { is_spacer = true })
+            table.insert(items, { is_spacer = true })
         elseif key == "time" then
-            table.insert(row_items, Button:new{
+            table.insert(items, { widget = Button:new{
                 text           = getTimeText(),
                 face           = Font:getFace("ffont"),
                 text_font_bold = false,
@@ -229,9 +229,9 @@ local function createShortcutsBar(menu, config)
                         text = datetime.secondsToDateTime(nil, nil, true),
                     })
                 end,
-            })
+            }})
         elseif key == "battery" then
-            table.insert(row_items, Button:new{
+            table.insert(items, { widget = Button:new{
                 text           = getBatteryText(),
                 face           = Font:getFace("ffont"),
                 text_font_bold = false,
@@ -240,7 +240,7 @@ local function createShortcutsBar(menu, config)
                 callback       = function()
                     UIManager:broadcastEvent(Event:new("ShowBatteryStatistics"))
                 end,
-            })
+            }})
         else
             local def = shortcut_defs[key]
             if def then
@@ -260,43 +260,64 @@ local function createShortcutsBar(menu, config)
                         })
                     end,
                 }
-                table.insert(row_items, btn)
+                table.insert(items, { widget = btn })
             end
         end
     end
 
-    table.insert(row_items, HorizontalSpan:new{ width = Size.padding.fullscreen })
-
-    -- Replace spacer markers with actual HorizontalSpans sized to fill remaining width
-    local fixed_w    = 0
-    local spacer_cnt = 0
-    for _, item in ipairs(row_items) do
-        if item.is_spacer then
-            spacer_cnt = spacer_cnt + 1
-        elseif item.getSize then
-            fixed_w = fixed_w + item:getSize().w
+    -- 2. Measure fixed-width items.
+    for _, item in ipairs(items) do
+        if not item.is_spacer then
+            item.width = item.widget:getSize().w
         end
     end
-    local spacer_w = (spacer_cnt > 0)
-        and math.max(Size.padding.default, (menu.width - fixed_w) / spacer_cnt)
-        or  Size.padding.default
 
-    local resolved = {}
-    for _, item in ipairs(row_items) do
-        table.insert(resolved, item.is_spacer
-            and HorizontalSpan:new{ width = spacer_w }
-            or  item)
+    -- 3. Split items into rows that fit within avail_w.
+    local rows = {}
+    local cur_row, cur_w = {}, 0
+    for _, item in ipairs(items) do
+        local iw = item.is_spacer and 0 or item.width
+        if not item.is_spacer and cur_w + iw > avail_w and #cur_row > 0 then
+            table.insert(rows, cur_row)
+            cur_row, cur_w = {}, 0
+        end
+        table.insert(cur_row, item)
+        if not item.is_spacer then cur_w = cur_w + iw end
     end
+    if #cur_row > 0 then table.insert(rows, cur_row) end
+    if #rows == 0 then rows = {{}} end
 
-    local v_pad = Screen:scaleBySize(6)
-    local bar = VerticalGroup:new{
-        align             = "right",
-        is_shortcuts_bar  = true,
-        VerticalSpan:new{ width = v_pad },
-        HorizontalGroup:new{ align = "center", unpack(resolved) },
-        VerticalSpan:new{ width = v_pad },
-    }
-    return bar
+    -- 4. Build widget: rows stacked vertically.
+    local v_pad  = Screen:scaleBySize(6)
+    local row_gap = Screen:scaleBySize(4)
+    local vg = VerticalGroup:new{ align = "right", is_shortcuts_bar = true }
+    table.insert(vg, VerticalSpan:new{ width = v_pad })
+    for ri, row in ipairs(rows) do
+        -- Resolve spacer widths for this row.
+        local fixed_w, spacer_cnt = 0, 0
+        for _, item in ipairs(row) do
+            if item.is_spacer then spacer_cnt = spacer_cnt + 1
+            else fixed_w = fixed_w + item.width end
+        end
+        local spacer_w = spacer_cnt > 0
+            and math.max(Size.padding.default, (avail_w - fixed_w) / spacer_cnt)
+            or  Size.padding.default
+
+        local hg = HorizontalGroup:new{ align = "center" }
+        table.insert(hg, HorizontalSpan:new{ width = h_margin })
+        for _, item in ipairs(row) do
+            table.insert(hg, item.is_spacer
+                and HorizontalSpan:new{ width = spacer_w }
+                or  item.widget)
+        end
+        table.insert(hg, HorizontalSpan:new{ width = h_margin })
+        table.insert(vg, hg)
+        if ri < #rows then
+            table.insert(vg, VerticalSpan:new{ width = row_gap })
+        end
+    end
+    table.insert(vg, VerticalSpan:new{ width = v_pad })
+    return vg
 end
 
 -- ==========================================================================
@@ -376,12 +397,11 @@ local function createHomeContent(menu, config)
         end
     end
 
-    -- ---- Bottom row: shortcuts icons (right) + optional back button (left) ----
-    local shortcuts_bar = createShortcutsBar(menu, config)
-
-    local bottom_row
+    -- ---- Bottom row: back button (left) + shortcuts icons (right) ----
+    -- Build the back button first so we can reserve its width from the shortcuts avail_w.
+    local back_btn
     if config.show_back_button ~= false then
-        local icon_size     = Screen:scaleBySize(14)
+        local chevron_size  = Screen:scaleBySize(14)
         local back_callback = function()
             if menu.close_callback then menu.close_callback() end
             local ReaderUI = require("apps/reader/readerui")
@@ -390,14 +410,13 @@ local function createHomeContent(menu, config)
                 ReaderUI.instance:showFileManager(file)
             end
         end
-
-        local back_btn = HorizontalGroup:new{
+        back_btn = HorizontalGroup:new{
             align = "center",
             HorizontalSpan:new{ width = Size.padding.fullscreen },
             IconButton:new{
                 icon          = "chevron.left",
-                width         = icon_size,
-                height        = icon_size,
+                width         = chevron_size,
+                height        = chevron_size,
                 padding_top   = Screen:scaleBySize(2),
                 padding_left  = 0,
                 padding_right = Screen:scaleBySize(4),
@@ -413,7 +432,12 @@ local function createHomeContent(menu, config)
                 callback       = back_callback,
             },
         }
+    end
 
+    local shortcuts_bar = createShortcutsBar(menu, config, back_btn and back_btn:getSize().w or 0)
+
+    local bottom_row
+    if back_btn then
         local bottom_h = math.max(shortcuts_bar:getSize().h, back_btn:getSize().h)
         bottom_row = OverlapGroup:new{
             dimen = Geom:new{ w = total_w, h = bottom_h },

@@ -204,8 +204,8 @@ end
 -- ==========================================================================
 
 --- Build the shortcuts icon rows (wraps to multiple lines if needed).
-    local icon_size     = Screen:scaleBySize(26)
 local function createShortcutsBar(menu, config, reserved_left)
+    local icon_size     = Screen:scaleBySize(config.icon_size)
     local padding_h     = Screen:scaleBySize(config.spacing)
     local shortcut_defs = buildShortcutDefs(menu)
     local h_margin      = Size.padding.fullscreen

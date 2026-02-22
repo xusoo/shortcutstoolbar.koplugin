@@ -12,6 +12,7 @@ All options are configurable from the menu:
 --]]
 
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 -- ==========================================================================
 -- Configuration
@@ -31,6 +32,7 @@ local TouchMenu       = require("ui/widget/touchmenu")
 local UIManager       = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ConfirmBox      = require("ui/widget/confirmbox")
+local SpinWidget      = require("ui/widget/spinwidget")
 
 local createHomeContent = require("home_content")
 
@@ -58,6 +60,8 @@ local function readConfig()
     config.show_time_and_battery = G_reader_settings:nilOrTrue("readertoolbar_show_time_battery")
     config.show_book_info        = G_reader_settings:nilOrTrue("readertoolbar_show_book_info")
     config.show_back_button      = G_reader_settings:nilOrTrue("readertoolbar_show_back_button")
+    local icon_size_raw = G_reader_settings:readSetting("readertoolbar_icon_size")
+    config.icon_size = tonumber(icon_size_raw) or 26
     -- Build the active items list, respecting the user's saved ordering.
     -- readertoolbar_item_order is a CSV of ALL keys (enabled + disabled) in preferred order.
     local saved_order = G_reader_settings:readSetting("readertoolbar_item_order")
@@ -174,6 +178,40 @@ function ReaderToolbar:init()
 
     readConfig()
 
+    -- DEV: auto-open the configure dialog on startup for quick iteration.
+    UIManager:scheduleIn(0, function()
+        local ShortcutsConfigDialog = require("shortcuts_config")
+        local enabled_keys, in_enabled, disabled_keys = {}, {}, {}
+        for key in (config.items or ""):gmatch("([^,]+)") do
+            table.insert(enabled_keys, key)
+            in_enabled[key] = true
+        end
+        for _, item in ipairs(SHORTCUT_ITEMS) do
+            if not in_enabled[item.key] then
+                table.insert(disabled_keys, item.key)
+            end
+        end
+        UIManager:show(ShortcutsConfigDialog:new{
+            enabled_keys  = enabled_keys,
+            disabled_keys = disabled_keys,
+            on_save       = function(new_enabled, new_disabled)
+                local is_enabled = {}
+                for _, k in ipairs(new_enabled) do is_enabled[k] = true end
+                for _, item in ipairs(SHORTCUT_ITEMS) do
+                    G_reader_settings:saveSetting(
+                        "readertoolbar_item_" .. item.key,
+                        is_enabled[item.key] and true or false)
+                end
+                local full_order = {}
+                for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
+                for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
+                G_reader_settings:saveSetting("readertoolbar_item_order",
+                    table.concat(full_order, ","))
+                readConfig()
+            end,
+        })
+    end)
+
     -- Patch 1: start every reader menu in the home (closed) state.
     local orig_init = TouchMenu.init
     TouchMenu.init = function(self_menu, ...)
@@ -258,9 +296,31 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 end,
             },
             {
-                text             = _("Configure shortcuts"),
-                separator = true,
-                enabled_func     = function() return config.enabled end,
+                text_func    = function()
+                    return T(_("Icon size: %1"), config.icon_size)
+                end,
+                enabled_func = function() return config.enabled end,
+                keep_menu_open = true,
+                callback     = function(touchmenu_instance)
+                    UIManager:show(SpinWidget:new{
+                        title_text    = _("Icon size"),
+                        value         = config.icon_size,
+                        value_min     = 14,
+                        value_max     = 48,
+                        value_step    = 2,
+                        default_value = 26,
+                        callback      = function(spin)
+                            config.icon_size = spin.value
+                            G_reader_settings:saveSetting("readertoolbar_icon_size", spin.value)
+                            if touchmenu_instance then touchmenu_instance:updateItems() end
+                        end,
+                    })
+                end,
+            },
+            {
+                text         = _("Configure shortcuts"),
+                separator    = true,
+                enabled_func = function() return config.enabled end,
                 callback     = function()
                     local ShortcutsConfigDialog = require("shortcuts_config")
                     -- Build enabled_keys from current active order and
@@ -289,7 +349,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 G_reader_settings:saveSetting(
                                     "readertoolbar_item_" .. item.key,
                                     is_enabled[item.key] and true or false)
-                                end
+                            end
                             -- Persist full order: enabled first, then disabled.
                             local full_order = {}
                             for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
@@ -299,11 +359,11 @@ function ReaderToolbar:addToMainMenu(menu_items)
                             readConfig()
                         end,
                     })
-                            end,
+                end,
             },
             {
                 text      = _("Reset settings"),
-                            callback     = function()
+                callback  = function()
                     UIManager:show(ConfirmBox:new{
                         text    = _("Reset all Reader Toolbar settings to defaults?"),
                         ok_text = _("Reset"),
@@ -313,6 +373,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 "readertoolbar_show_book_info",
                                 "readertoolbar_show_time_battery",
                                 "readertoolbar_show_back_button",
+                                "readertoolbar_icon_size",
                                 "readertoolbar_item_order",
                             }
                             for _, item in ipairs(SHORTCUT_ITEMS) do
@@ -321,9 +382,9 @@ function ReaderToolbar:addToMainMenu(menu_items)
                             for _, key in ipairs(keys_to_del) do
                                 G_reader_settings:delSetting(key)
                             end
-                                readConfig()
-                            end,
-                        })
+                            readConfig()
+                        end,
+                    })
                 end,
             },
         },

@@ -28,7 +28,8 @@ local BD               = require("ui/bidi")
 local datetime         = require("datetime")
 local _                = require("gettext")
 
-local SHORTCUT_DATA = require("shortcuts_data")
+local SHORTCUT_DATA    = require("shortcuts_data")
+local packIntoRows     = require("shared_layout")
 
 local ITEM_BY_KEY = {}
 for _, item in ipairs(SHORTCUT_DATA) do
@@ -37,7 +38,7 @@ end
 
 -- sizes
 local CELL_ICON         = Screen:scaleBySize(22)
-local CELL_PAD          = Screen:scaleBySize(8)   -- matches ITEM_SPACING in main.lua
+local CELL_PAD          = Screen:scaleBySize(SHORTCUT_DATA.ITEM_SPACING)
 local CELL_GAP          = 0                        -- icons are flush, padding provides the gap
 local CELL_SIZE         = CELL_ICON + 2 * CELL_PAD
 local SPACER_W_DISABLED = CELL_SIZE
@@ -49,6 +50,27 @@ local function vspace(w, h)
     return LineWidget:new{
         dimen      = Geom:new{ w = w, h = h },
         background = Blitbuffer.COLOR_WHITE,
+    }
+end
+
+--- Thin horizontal spacer for use inside HorizontalGroup rows.
+local function hspace(px) return vspace(Screen:scaleBySize(px), 1) end
+
+--- Horizontal divider line at full dialog width.
+-- Pass dlg_width explicitly so this can live at module level.
+local function separator(dlg_width, size, color)
+    return LineWidget:new{
+        dimen      = Geom:new{ w = dlg_width, h = Screen:scaleBySize(size or 1) },
+        background = color or Blitbuffer.COLOR_DARK_GRAY,
+    }
+end
+
+--- Small uppercase section label in dark gray.
+local function sectionLabel(txt)
+    return TextWidget:new{
+        text    = txt,
+        face    = Font:getFace("infofont", 11),
+        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
     }
 end
 
@@ -180,23 +202,10 @@ function ShortcutsConfigDialog:_buildBar(bar, bar_width)
         end
     end
 
-    -- 2. Split cells into rows that fit within bar_width.
-    -- In the disabled bar spacers have a fixed width (SPACER_W_DISABLED) and must
-    -- be counted toward overflow. In the enabled bar spacers are elastic (fill
-    -- remaining space), so they never cause overflow and are counted as 0.
+    -- Disabled bar: spacers count as SPACER_W_DISABLED toward overflow.
+    -- Enabled bar:  spacers are elastic (count as 0, never cause overflow).
     local spacer_layout_w = (bar == "disabled") and SPACER_W_DISABLED or 0
-    local rows = {}
-    local cur_row, cur_w = {}, 0
-    for _, cell in ipairs(cells) do
-        local cell_w = cell.is_spacer and spacer_layout_w or cell.width
-        if cur_w + cell_w > bar_width and #cur_row > 0 then
-            table.insert(rows, cur_row)
-            cur_row, cur_w = {}, 0
-        end
-        table.insert(cur_row, cell)
-        cur_w = cur_w + cell_w
-    end
-    if #cur_row > 0 then table.insert(rows, cur_row) end
+    local rows = packIntoRows(cells, bar_width, spacer_layout_w)
 
     -- 3. Build each row, expanding spacers to fill remaining width (enabled bar)
     --    or using SPACER_W_DISABLED (inactive bar).
@@ -308,27 +317,12 @@ function ShortcutsConfigDialog:init()
     end
     local reorder_row = HorizontalGroup:new{ align = "center" }
     reorder_row[#reorder_row + 1] = navBtn("chevron.first", "first")
-    reorder_row[#reorder_row + 1] = vspace(Screen:scaleBySize(6), Screen:scaleBySize(1))
+    reorder_row[#reorder_row + 1] = hspace(6)
     reorder_row[#reorder_row + 1] = navBtn("chevron.left", "left")
-    reorder_row[#reorder_row + 1] = vspace(Screen:scaleBySize(24), Screen:scaleBySize(1))
+    reorder_row[#reorder_row + 1] = hspace(24)
     reorder_row[#reorder_row + 1] = navBtn("chevron.right", "right")
-    reorder_row[#reorder_row + 1] = vspace(Screen:scaleBySize(6), Screen:scaleBySize(1))
+    reorder_row[#reorder_row + 1] = hspace(6)
     reorder_row[#reorder_row + 1] = navBtn("chevron.last", "last")
-
-    local function separator(size, color)
-        return LineWidget:new{
-            dimen      = Geom:new{ w = dlg_width, h = Screen:scaleBySize(size or 1) },
-            background = color or Blitbuffer.COLOR_DARK_GRAY,
-        }
-     end
-
-    local function sectionLabel(txt)
-        return TextWidget:new{
-            text    = txt,
-            face    = Font:getFace("infofont", 11),
-            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
-        }
-    end
 
     local function barFrame(bar)
         return FrameContainer:new{
@@ -388,13 +382,13 @@ function ShortcutsConfigDialog:init()
     local dialog_body = VerticalGroup:new{ align = "left" }
     dialog_body[#dialog_body + 1] = title_bar
     dialog_body[#dialog_body + 1] = top_section
-    dialog_body[#dialog_body + 1] = separator()
+    dialog_body[#dialog_body + 1] = separator(dlg_width)
     dialog_body[#dialog_body + 1] = barFrame("disabled")
-    dialog_body[#dialog_body + 1] = separator()
+    dialog_body[#dialog_body + 1] = separator(dlg_width)
     dialog_body[#dialog_body + 1] = mid_section
-    dialog_body[#dialog_body + 1] = separator()
+    dialog_body[#dialog_body + 1] = separator(dlg_width)
     dialog_body[#dialog_body + 1] = barFrame("enabled")
-    dialog_body[#dialog_body + 1] = separator()
+    dialog_body[#dialog_body + 1] = separator(dlg_width)
     dialog_body[#dialog_body + 1] = bot_section
 
     local frame = FrameContainer:new{

@@ -21,6 +21,7 @@ local datetime = require("datetime")
 local _        = require("gettext")
 
 local createBookInfoPanel = require("book_info_panel")
+local packIntoRows        = require("shared_layout")
 
 local Button          = require("ui/widget/button")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
@@ -54,6 +55,59 @@ local function getBatteryText()
         text = text .. " " .. BD.wrap("+") .. BD.wrap(aux_symbol) .. BD.wrap(aux_lvl .. "%")
     end
     return text
+end
+
+--- Close the menu by firing its close_callback (safe no-op when absent).
+local function closeMenu(menu)
+    if menu.close_callback then menu.close_callback() end
+end
+
+--- Shared time button used by both the top-right widget and the shortcuts bar.
+local function createTimeButton(padding_h)
+    return Button:new{
+        text           = getTimeText(),
+        face           = Font:getFace("ffont"),
+        text_font_bold = false,
+        padding_h      = padding_h,
+        bordersize     = 0,
+        callback       = function()
+            UIManager:show(InfoMessage:new{
+                text = datetime.secondsToDateTime(nil, nil, true),
+            })
+        end,
+    }
+end
+
+--- Shared battery button used by both the top-right widget and the shortcuts bar.
+local function createBatteryButton(padding_h)
+    return Button:new{
+        text           = getBatteryText(),
+        face           = Font:getFace("ffont"),
+        text_font_bold = false,
+        padding_h      = padding_h,
+        bordersize     = 0,
+        callback       = function()
+            UIManager:broadcastEvent(Event:new("ShowBatteryStatistics"))
+        end,
+    }
+end
+
+--- Build an OverlapGroup row with an optional left widget and optional right widget.
+local function createSplitRow(total_w, h, left_widget, right_widget)
+    local row = OverlapGroup:new{ dimen = Geom:new{ w = total_w, h = h } }
+    if left_widget then
+        table.insert(row, LeftContainer:new{
+            dimen = Geom:new{ w = total_w, h = h },
+            left_widget,
+        })
+    end
+    if right_widget then
+        table.insert(row, RightContainer:new{
+            dimen = Geom:new{ w = total_w, h = h },
+            right_widget,
+        })
+    end
+    return row
 end
 
 --- Navigate a TouchMenu into a sub-item identified by ID string or predicate.
@@ -152,7 +206,6 @@ local function buildShortcutDefs(menu)
             icon        = "appbar.navigation",
             description = _("Bookmarks"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
                 UIManager:broadcastEvent(Event:new("ShowBookmark"))
             end,
         },
@@ -160,7 +213,6 @@ local function buildShortcutDefs(menu)
             icon        = "appbar.pageview",
             description = _("Table of Contents"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
                 UIManager:broadcastEvent(Event:new("ShowToc"))
             end,
         },
@@ -168,7 +220,7 @@ local function buildShortcutDefs(menu)
             icon        = "appbar.search",
             description = _("Search"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
+                closeMenu(menu)
                 UIManager:broadcastEvent(Event:new("ShowFulltextSearchInput"))
             end,
         },
@@ -176,7 +228,7 @@ local function buildShortcutDefs(menu)
             icon        = "chevron.last",
             description = _("Skim document"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
+                closeMenu(menu)
                 UIManager:broadcastEvent(Event:new("ShowSkimtoDialog"))
             end,
         },
@@ -184,7 +236,6 @@ local function buildShortcutDefs(menu)
             icon        = "book.opened",
             description = _("Page browser"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
                 UIManager:broadcastEvent(Event:new("ShowPageBrowser"))
             end,
         },
@@ -192,7 +243,6 @@ local function buildShortcutDefs(menu)
             icon        = "notice-info",
             description = _("Book status"),
             callback    = function()
-                if menu.close_callback then menu.close_callback() end
                 UIManager:broadcastEvent(Event:new("ShowBookStatus"))
             end,
         },
@@ -218,29 +268,9 @@ local function createShortcutsBar(menu, config, reserved_left)
         if key == "spacer" then
             table.insert(items, { is_spacer = true })
         elseif key == "time" then
-            table.insert(items, { widget = Button:new{
-                text           = getTimeText(),
-                face           = Font:getFace("ffont"),
-                text_font_bold = false,
-                padding_h      = padding_h,
-                bordersize     = 0,
-                callback       = function()
-                    UIManager:show(InfoMessage:new{
-                        text = datetime.secondsToDateTime(nil, nil, true),
-                    })
-                end,
-            }})
+            table.insert(items, { widget = createTimeButton(padding_h) })
         elseif key == "battery" then
-            table.insert(items, { widget = Button:new{
-                text           = getBatteryText(),
-                face           = Font:getFace("ffont"),
-                text_font_bold = false,
-                padding_h      = padding_h,
-                bordersize     = 0,
-                callback       = function()
-                    UIManager:broadcastEvent(Event:new("ShowBatteryStatistics"))
-                end,
-            }})
+            table.insert(items, { widget = createBatteryButton(padding_h) })
         else
             local def = shortcut_defs[key]
             if def then
@@ -272,20 +302,8 @@ local function createShortcutsBar(menu, config, reserved_left)
         end
     end
 
-    -- 3. Split items into rows that fit within avail_w.
-    local rows = {}
-    local cur_row, cur_w = {}, 0
-    for _, item in ipairs(items) do
-        local iw = item.is_spacer and 0 or item.width
-        if not item.is_spacer and cur_w + iw > avail_w and #cur_row > 0 then
-            table.insert(rows, cur_row)
-            cur_row, cur_w = {}, 0
-        end
-        table.insert(cur_row, item)
-        if not item.is_spacer then cur_w = cur_w + iw end
-    end
-    if #cur_row > 0 then table.insert(rows, cur_row) end
-    if #rows == 0 then rows = {{}} end
+    -- 3. Split items into rows that fit avail_w (spacers are elastic, never overflow).
+    local rows = packIntoRows(items, avail_w, 0)
 
     -- 4. Build widget: rows stacked vertically.
     local v_pad  = Screen:scaleBySize(6)
@@ -331,31 +349,11 @@ local function createHomeContent(menu, config)
     -- ---- Top row: book info (left) + time / battery (right) ----
     local top_right
     if config.show_time_and_battery then
-        local batt_text = getBatteryText()
+        local padding_h = Screen:scaleBySize(config.spacing)
         top_right = HorizontalGroup:new{
             align = "center",
-            Button:new{
-                text           = getTimeText(),
-                face           = Font:getFace("ffont"),
-                text_font_bold = false,
-                padding_h      = Screen:scaleBySize(config.spacing),
-                bordersize     = 0,
-                callback       = function()
-                    UIManager:show(InfoMessage:new{
-                        text = datetime.secondsToDateTime(nil, nil, true),
-                    })
-                end,
-            },
-            Button:new{
-                text           = batt_text,
-                face           = Font:getFace("ffont"),
-                text_font_bold = false,
-                padding_h      = Screen:scaleBySize(config.spacing),
-                bordersize     = 0,
-                callback       = function()
-                    UIManager:broadcastEvent(Event:new("ShowBatteryStatistics"))
-                end,
-            },
+            createTimeButton(padding_h),
+            createBatteryButton(padding_h),
             HorizontalSpan:new{ width = Size.padding.fullscreen },
         }
     end
@@ -436,30 +434,8 @@ local function createHomeContent(menu, config)
 
     local shortcuts_bar = createShortcutsBar(menu, config, back_btn and back_btn:getSize().w or 0)
 
-    local bottom_row
-    if back_btn then
-        local bottom_h = math.max(shortcuts_bar:getSize().h, back_btn:getSize().h)
-        bottom_row = OverlapGroup:new{
-            dimen = Geom:new{ w = total_w, h = bottom_h },
-            LeftContainer:new{
-                dimen = Geom:new{ w = total_w, h = bottom_h },
-                back_btn,
-            },
-            RightContainer:new{
-                dimen = Geom:new{ w = total_w, h = bottom_h },
-                shortcuts_bar,
-            },
-        }
-    else
-        local bar_h = shortcuts_bar:getSize().h
-        bottom_row = OverlapGroup:new{
-            dimen = Geom:new{ w = total_w, h = bar_h },
-            RightContainer:new{
-                dimen = Geom:new{ w = total_w, h = bar_h },
-                shortcuts_bar,
-            },
-        }
-    end
+    local bottom_h   = math.max(shortcuts_bar:getSize().h, back_btn and back_btn:getSize().h or 0)
+    local bottom_row = createSplitRow(total_w, bottom_h, back_btn, shortcuts_bar)
 
     -- ---- Combine rows ----
     local combined = VerticalGroup:new{

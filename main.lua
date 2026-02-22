@@ -18,11 +18,11 @@ local T = require("ffi/util").template
 -- Configuration
 -- ==========================================================================
 
--- Horizontal padding (px, before scaling) between icon buttons.
-local ITEM_SPACING = 8
-
 -- Single source of truth for all available shortcuts (key, label, icon, default).
 local SHORTCUT_ITEMS = require("shortcuts_data")
+-- Horizontal padding (px, before scaling) between icon buttons.
+-- Read from shortcuts_data so this and shortcuts_config.lua never drift apart.
+local ITEM_SPACING = SHORTCUT_ITEMS.ITEM_SPACING
 
 -- ==========================================================================
 -- Helpers
@@ -159,6 +159,46 @@ local function resetToHomeState(menu, config)
 end
 
 -- ==========================================================================
+-- Shortcuts config helper (shared between menu callback and any future caller)
+-- ==========================================================================
+
+--- Opens the shortcuts-configuration dialog, pre-populating it from the
+-- current config and wiring up on_save to persist changes.
+-- Extracted here so it can be called from addToMainMenu and any user patch.
+local function openShortcutsConfig()
+    local ShortcutsConfigDialog = require("shortcuts_config")
+    local enabled_keys, in_enabled, disabled_keys = {}, {}, {}
+    for key in (config.items or ""):gmatch("([^,]+)") do
+        table.insert(enabled_keys, key)
+        in_enabled[key] = true
+    end
+    for _, item in ipairs(SHORTCUT_ITEMS) do
+        if not in_enabled[item.key] then
+            table.insert(disabled_keys, item.key)
+        end
+    end
+    UIManager:show(ShortcutsConfigDialog:new{
+        enabled_keys  = enabled_keys,
+        disabled_keys = disabled_keys,
+        on_save       = function(new_enabled, new_disabled)
+            local is_enabled = {}
+            for _, k in ipairs(new_enabled) do is_enabled[k] = true end
+            for _, item in ipairs(SHORTCUT_ITEMS) do
+                G_reader_settings:saveSetting(
+                    "readertoolbar_item_" .. item.key,
+                    is_enabled[item.key] and true or false)
+            end
+            local full_order = {}
+            for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
+            for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
+            G_reader_settings:saveSetting("readertoolbar_item_order",
+                table.concat(full_order, ","))
+            readConfig()
+        end,
+    })
+end
+
+-- ==========================================================================
 -- Plugin
 -- ==========================================================================
 
@@ -177,79 +217,70 @@ function ReaderToolbar:init()
     TouchMenu._readertoolbar_patched = true
 
     readConfig()
+    self:_applyMenuPatches()
+end
 
-    -- DEV: auto-open the configure dialog on startup for quick iteration.
-    UIManager:scheduleIn(0, function()
-        local ShortcutsConfigDialog = require("shortcuts_config")
-        local enabled_keys, in_enabled, disabled_keys = {}, {}, {}
-        for key in (config.items or ""):gmatch("([^,]+)") do
-            table.insert(enabled_keys, key)
-            in_enabled[key] = true
-        end
-        for _, item in ipairs(SHORTCUT_ITEMS) do
-            if not in_enabled[item.key] then
-                table.insert(disabled_keys, item.key)
-            end
-        end
-        UIManager:show(ShortcutsConfigDialog:new{
-            enabled_keys  = enabled_keys,
-            disabled_keys = disabled_keys,
-            on_save       = function(new_enabled, new_disabled)
-                local is_enabled = {}
-                for _, k in ipairs(new_enabled) do is_enabled[k] = true end
-                for _, item in ipairs(SHORTCUT_ITEMS) do
-                    G_reader_settings:saveSetting(
-                        "readertoolbar_item_" .. item.key,
-                        is_enabled[item.key] and true or false)
-                end
-                local full_order = {}
-                for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
-                for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
-                G_reader_settings:saveSetting("readertoolbar_item_order",
-                    table.concat(full_order, ","))
-                readConfig()
-            end,
-        })
-    end)
+--- Installs the three TouchMenu monkey-patches.
+-- Override onMenuInit / onSwitchTab / onMenuUpdateItems in a user patch to
+-- customise behaviour without re-patching TouchMenu directly.
+function ReaderToolbar:_applyMenuPatches()
+    local plugin = self
 
     -- Patch 1: start every reader menu in the home (closed) state.
     local orig_init = TouchMenu.init
-    TouchMenu.init = function(self_menu, ...)
-        orig_init(self_menu, ...)
-        if config.enabled then resetToHomeState(self_menu, config) end
+    TouchMenu.init = function(menu, ...)
+        orig_init(menu, ...)
+        if config.enabled then plugin:onMenuInit(menu) end
     end
 
     -- Patch 2: tap an already-active tab to collapse back to home.
     local orig_switchTab = TouchMenu.switchMenuTab
-    TouchMenu.switchMenuTab = function(self_menu, tab_num)
-        if self_menu.cur_tab == tab_num and isReaderMenu(self_menu) and config.enabled then
-            resetToHomeState(self_menu, config)
-            return
-        end
-        return orig_switchTab(self_menu, tab_num)
+    TouchMenu.switchMenuTab = function(menu, tab_num)
+        if plugin:onSwitchTab(menu, tab_num) then return end
+        return orig_switchTab(menu, tab_num)
     end
 
     -- Patch 3: after updateItems re-renders, re-inject the home panel when
     -- no tab is selected (home state).
     local orig_updateItems = TouchMenu.updateItems
-    TouchMenu.updateItems = function(self_menu, target_page, target_item_id)
-        orig_updateItems(self_menu, target_page, target_item_id)
-        if not config.enabled or not isReaderMenu(self_menu) or self_menu.cur_tab then return end
+    TouchMenu.updateItems = function(menu, ...)
+        orig_updateItems(menu, ...)
+        plugin:onMenuUpdateItems(menu)
+    end
+end
 
-        -- Only inject if the home panel isn't already present.
-        if not self_menu.item_group then return end
-        for _, widget in ipairs(self_menu.item_group) do
-            if widget and widget.is_shortcuts_bar then return end
-        end
+--- Called after TouchMenu:init() for a reader menu.
+-- Override in a patch to change the initial home-state behaviour.
+function ReaderToolbar:onMenuInit(menu)
+    resetToHomeState(menu, config)
+end
 
-        local ok, home = pcall(createHomeContent, self_menu, config)
-        if ok and home and #self_menu.item_group >= 1 then
-            table.insert(self_menu.item_group, 2, home)
-            self_menu.item_group:resetLayout()
-            local sz = self_menu.item_group:getSize()
-            if self_menu.dimen then
-                self_menu.dimen.h = sz.h + self_menu.bordersize * 2 + self_menu.padding
-            end
+--- Called when the user taps a menu tab.
+-- Return true to consume the event (prevent normal tab-switching).
+-- Override in a patch to change tap-to-collapse logic.
+function ReaderToolbar:onSwitchTab(menu, tab_num)
+    if menu.cur_tab == tab_num and isReaderMenu(menu) and config.enabled then
+        resetToHomeState(menu, config)
+        return true
+    end
+end
+
+--- Called after TouchMenu:updateItems().
+-- Override in a patch to change home-panel injection.
+function ReaderToolbar:onMenuUpdateItems(menu)
+    if not config.enabled or not isReaderMenu(menu) or menu.cur_tab then return end
+    -- Only inject if the home panel isn't already present.
+    if not menu.item_group then return end
+    for _, widget in ipairs(menu.item_group) do
+        if widget and widget.is_shortcuts_bar then return end
+    end
+    local ok, home = pcall(createHomeContent, menu, config)
+    if ok and home and #menu.item_group >= 1 then
+        table.insert(menu.item_group, 2, home)
+        menu.item_group:resetLayout()
+        local sz = menu.item_group:getSize()
+        if menu.dimen then
+            menu.dimen.h = sz.h + menu.bordersize * 2 + menu.padding
         end
     end
 end
@@ -321,45 +352,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 text         = _("Configure shortcuts"),
                 separator    = true,
                 enabled_func = function() return config.enabled end,
-                callback     = function()
-                    local ShortcutsConfigDialog = require("shortcuts_config")
-                    -- Build enabled_keys from current active order and
-                    -- disabled_keys from all items not currently active.
-                    local enabled_keys = {}
-                    local in_enabled   = {}
-                    for key in (config.items or ""):gmatch("([^,]+)") do
-                        table.insert(enabled_keys, key)
-                        in_enabled[key] = true
-                    end
-                    -- Disabled list: follow SHORTCUT_ITEMS order, exclude enabled items.
-                    local disabled_keys = {}
-                    for _, item in ipairs(SHORTCUT_ITEMS) do
-                        if not in_enabled[item.key] then
-                            table.insert(disabled_keys, item.key)
-                        end
-                    end
-                    UIManager:show(ShortcutsConfigDialog:new{
-                        enabled_keys  = enabled_keys,
-                        disabled_keys = disabled_keys,
-                        on_save       = function(new_enabled, new_disabled)
-                            -- Persist enabled/disabled state per item.
-                            local is_enabled = {}
-                            for _, k in ipairs(new_enabled) do is_enabled[k] = true end
-                            for _, item in ipairs(SHORTCUT_ITEMS) do
-                                G_reader_settings:saveSetting(
-                                    "readertoolbar_item_" .. item.key,
-                                    is_enabled[item.key] and true or false)
-                            end
-                            -- Persist full order: enabled first, then disabled.
-                            local full_order = {}
-                            for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
-                            for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
-                            G_reader_settings:saveSetting("readertoolbar_item_order",
-                                table.concat(full_order, ","))
-                            readConfig()
-                        end,
-                    })
-                end,
+                callback     = openShortcutsConfig,
             },
             {
                 text      = _("Reset settings"),

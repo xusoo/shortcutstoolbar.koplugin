@@ -11,7 +11,12 @@ Each entry has:
 
 local _ = require("gettext")
 
-return {
+-- Single source of truth for icon-button horizontal padding (px, before scaling).
+-- Both main.lua (ITEM_SPACING) and shortcuts_config.lua (CELL_PAD) read this value
+-- so they never silently drift apart.
+local ITEM_SPACING = 8
+
+local items = {
     { key = "font",         label = _("Font"),              icon = "appbar.textsize",   default = true  },
     { key = "frontlight",   label = _("Frontlight"),        icon = "appbar.contrast",   default = true  },
     { key = "wifi",         label = _("Wi-Fi"),             icon = "wifi",              default = true  },
@@ -25,3 +30,6 @@ return {
     { key = "battery",      label = _("Battery"),           icon = nil,                 default = false },
     { key = "spacer",       label = _("Spacer"),            icon = nil,                 default = false },
 }
+
+items.ITEM_SPACING = ITEM_SPACING
+return items

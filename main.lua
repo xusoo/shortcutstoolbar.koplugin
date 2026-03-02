@@ -33,6 +33,8 @@ local UIManager       = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ConfirmBox      = require("ui/widget/confirmbox")
 local SpinWidget      = require("ui/widget/spinwidget")
+local Picker          = require("custom_shortcut_picker")
+local Manager         = require("custom_shortcut_manager")
 
 local createHomeContent = require("home_content")
 
@@ -73,10 +75,20 @@ local function readConfig()
             pos = pos + 1
         end
     end
-    -- Sort SHORTCUT_ITEMS by saved position; unseen items keep their original order at the end.
-    local sorted = {}
+    -- Sort SHORTCUT_ITEMS + custom shortcuts by saved position;
+    -- unseen items keep their original order at the end.
+    local all_items = {}
     for i, item in ipairs(SHORTCUT_ITEMS) do
-        table.insert(sorted, { item = item, sort_key = order_pos[item.key] or (1000 + i) })
+        table.insert(all_items, { item = item, idx = i })
+    end
+    local custom_items = Manager.getShortcutDataItems()
+    for i, item in ipairs(custom_items) do
+        table.insert(all_items, { item = item, idx = #SHORTCUT_ITEMS + i })
+    end
+    local sorted = {}
+    for _, entry in ipairs(all_items) do
+        local item = entry.item
+        table.insert(sorted, { item = item, sort_key = order_pos[item.key] or (1000 + entry.idx) })
     end
     table.sort(sorted, function(a, b) return a.sort_key < b.sort_key end)
     local active = {}
@@ -145,7 +157,7 @@ local function resetToHomeState(menu, config)
     end
 
     -- Inject the home content panel
-    local ok, home = pcall(createHomeContent, menu, config)
+    local ok, home = pcall(createHomeContent, menu, config, resetToHomeState)
     if ok and home and menu.item_group then
         table.insert(menu.item_group, 2, home)
         menu.item_group:resetLayout()
@@ -172,7 +184,11 @@ local function openShortcutsConfig()
         table.insert(enabled_keys, key)
         in_enabled[key] = true
     end
-    for _, item in ipairs(SHORTCUT_ITEMS) do
+    -- Build the full item list: static shortcuts + dynamic custom shortcuts.
+    local all_items = {}
+    for _, item in ipairs(SHORTCUT_ITEMS) do table.insert(all_items, item) end
+    for _, item in ipairs(Manager.getShortcutDataItems()) do table.insert(all_items, item) end
+    for _, item in ipairs(all_items) do
         if not in_enabled[item.key] then
             table.insert(disabled_keys, item.key)
         end
@@ -183,7 +199,7 @@ local function openShortcutsConfig()
         on_save       = function(new_enabled, new_disabled)
             local is_enabled = {}
             for _, k in ipairs(new_enabled) do is_enabled[k] = true end
-            for _, item in ipairs(SHORTCUT_ITEMS) do
+            for _, item in ipairs(all_items) do
                 G_reader_settings:saveSetting(
                     "readertoolbar_item_" .. item.key,
                     is_enabled[item.key] and true or false)
@@ -274,7 +290,7 @@ function ReaderToolbar:onMenuUpdateItems(menu)
     for _, widget in ipairs(menu.item_group) do
         if widget and widget.is_shortcuts_bar then return end
     end
-    local ok, home = pcall(createHomeContent, menu, config)
+    local ok, home = pcall(createHomeContent, menu, config, resetToHomeState)
     if ok and home and #menu.item_group >= 1 then
         table.insert(menu.item_group, 2, home)
         menu.item_group:resetLayout()
@@ -349,6 +365,15 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 end,
             },
             {
+                text         = _("Custom shortcuts"),
+                enabled_func = function() return config.enabled end,
+                sub_item_table_func = function()
+                    return Manager.buildSubItems(function()
+                        readConfig()
+                    end)
+                end,
+            },
+            {
                 text         = _("Configure shortcuts"),
                 separator    = true,
                 enabled_func = function() return config.enabled end,
@@ -358,7 +383,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 text      = _("Reset settings"),
                 callback  = function()
                     UIManager:show(ConfirmBox:new{
-                        text    = _("Reset all Reader Toolbar settings to defaults?"),
+                        text    = _("Reset all Reader Toolbar settings to defaults?\n\nCustom shortcuts will not be deleted."),
                         ok_text = _("Reset"),
                         ok_callback = function()
                             local keys_to_del = {
@@ -369,7 +394,13 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 "readertoolbar_icon_size",
                                 "readertoolbar_item_order",
                             }
+                            -- Remove per-item visibility settings for all shortcuts
+                            -- (static + custom). Custom definitions are intentionally
+                            -- kept; only removed from the toolbar.
                             for _, item in ipairs(SHORTCUT_ITEMS) do
+                                table.insert(keys_to_del, "readertoolbar_item_" .. item.key)
+                            end
+                            for _, item in ipairs(Manager.getShortcutDataItems()) do
                                 table.insert(keys_to_del, "readertoolbar_item_" .. item.key)
                             end
                             for _, key in ipairs(keys_to_del) do

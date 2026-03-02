@@ -22,6 +22,15 @@ local _        = require("gettext")
 
 local createBookInfoPanel = require("book_info_panel")
 local packIntoRows        = require("shared_layout")
+local IconWidget          = require("ui/widget/iconwidget")
+local Picker              = require("custom_shortcut_picker")
+local Manager             = require("custom_shortcut_manager")
+
+local SHORTCUT_DATA = require("shortcuts_data")
+
+-- Keyed lookup: ITEM_BY_KEY["font"] → shortcuts_data entry for fast access.
+local ITEM_BY_KEY = {}
+for _, item in ipairs(SHORTCUT_DATA) do ITEM_BY_KEY[item.key] = item end
 
 local Button          = require("ui/widget/button")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
@@ -154,13 +163,17 @@ end
 -- Shortcut definitions
 -- ==========================================================================
 
---- Build the table of available shortcut icon definitions for the given menu.
-local function buildShortcutDefs(menu)
-    return {
+-- Forward declaration so createShortcutsBar (below) can reference createHomeContent
+-- inside the on_refresh closure without a forward-reference error.
+local createHomeContent
+
+--- Build the table of shortcut callbacks for the given menu.
+-- icon, icon_file, and label come from shortcuts_data (ITEM_BY_KEY);
+-- only behaviour that depends on the live menu instance lives here.
+local function buildShortcutDefs(menu, on_refresh)
+    local defs = {
         font = {
-            icon        = "appbar.textsize",
-            description = _("Font"),
-            callback    = function()
+            callback = function()
                 -- Switch to the Typeset tab first
                 if menu.tab_item_table then
                     local found = false
@@ -181,72 +194,91 @@ local function buildShortcutDefs(menu)
                     drillDownToItem(menu, function(item)
                         local text = item.text or (item.text_func and item.text_func())
                         return type(text) == "string"
-                            and (text:find("Font") or text:find("font"))
+                            and (text:find(_("Font")) or text:find(_("font")))
                     end)
                 end
             end,
         },
         frontlight = {
-            icon        = "appbar.contrast",
-            description = _("Frontlight"),
-            callback    = function()
+            callback = function()
                 UIManager:broadcastEvent(Event:new("ShowFlDialog"))
             end,
         },
         wifi = {
-            icon        = NetworkMgr:isWifiOn() and "wifi" or "wifi.open.0",
-            description = _("Wi-Fi"),
-            callback    = function(btn)
+            -- Initial icon reflects current wifi state; callback toggles it.
+            icon     = NetworkMgr:isWifiOn() and "wifi" or "wifi.open.0",
+            callback = function(btn)
                 UIManager:broadcastEvent(Event:new("ToggleWifi"))
                 btn:setIcon(btn.icon == "wifi" and "wifi.open.0" or "wifi")
                 UIManager:setDirty(btn, "ui")
             end,
         },
         bookmarks = {
-            icon        = "appbar.navigation",
-            description = _("Bookmarks"),
-            callback    = function()
+            callback = function()
                 UIManager:broadcastEvent(Event:new("ShowBookmark"))
             end,
         },
         toc = {
-            icon        = "appbar.pageview",
-            description = _("Table of Contents"),
-            callback    = function()
+            callback = function()
                 UIManager:broadcastEvent(Event:new("ShowToc"))
             end,
         },
         search = {
-            icon        = "appbar.search",
-            description = _("Search"),
-            callback    = function()
+            callback = function()
                 closeMenu(menu)
                 UIManager:broadcastEvent(Event:new("ShowFulltextSearchInput"))
             end,
         },
         skim = {
-            icon        = "chevron.last",
-            description = _("Skim document"),
-            callback    = function()
+            callback = function()
                 closeMenu(menu)
                 UIManager:broadcastEvent(Event:new("ShowSkimtoDialog"))
             end,
         },
         page_browser = {
-            icon        = "book.opened",
-            description = _("Page browser"),
-            callback    = function()
+            callback = function()
                 UIManager:broadcastEvent(Event:new("ShowPageBrowser"))
             end,
         },
         book_status = {
-            icon        = "notice-info",
-            description = _("Book status"),
-            callback    = function()
+            callback = function()
                 UIManager:broadcastEvent(Event:new("ShowBookStatus"))
             end,
         },
+        night_mode = {
+            callback = function()
+                UIManager:broadcastEvent(Event:new("ToggleNightMode"))
+            end,
+        },
     }
+
+    -- Custom shortcuts (dynamic, from Manager) --------------------------------
+    -- Tap: replay if assigned, else open edit dialog.
+    -- Long-press: always open edit dialog (for reassign/rename).
+    for _i, sc in ipairs(Manager.loadAll()) do
+        local key = sc.key  -- capture
+        defs[key] = {
+            callback = function()
+                if sc.path_record then
+                    Picker.replayShortcut(menu, sc.path_record)
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Long-press to set up this shortcut."),
+                        timeout = 2,
+                    })
+                end
+            end,
+            hold_callback = function()
+                Manager.openEditDialog(Manager.find(key) or sc, menu, on_refresh)
+            end,
+            get_label = function()
+                local s = Manager.find(key) or sc
+                return s.path_record and s.path_record.display_label or _("Not assigned")
+            end,
+        }
+    end
+
+    return defs
 end
 
 -- ==========================================================================
@@ -254,18 +286,36 @@ end
 -- ==========================================================================
 
 --- Build the shortcuts icon rows (wraps to multiple lines if needed).
-local function createShortcutsBar(menu, config, reserved_left)
-    local icon_size     = Screen:scaleBySize(config.icon_size)
-    local padding_h     = Screen:scaleBySize(config.spacing)
-    local shortcut_defs = buildShortcutDefs(menu)
+local function createShortcutsBar(menu, config, reset_fn, reserved_left)
+    local icon_size = Screen:scaleBySize(config.icon_size)
+    local padding_h = Screen:scaleBySize(config.spacing)
+
+    -- Called after the edit dialog saves or deletes a shortcut: delegate to
+    -- the full resetToHomeState so the bar is rebuilt cleanly in one step.
+    local function on_refresh()
+        if reset_fn then reset_fn(menu, config) end
+    end
+
+    local shortcut_defs = buildShortcutDefs(menu, on_refresh)
     local h_margin      = Size.padding.fullscreen
     local avail_w       = menu.width - 2 * h_margin - (reserved_left or 0)
+
+    -- Augment the static ITEM_BY_KEY with live custom shortcuts so that icon,
+    -- icon_file, and label are resolved correctly for custom keys.
+    local item_lookup = ITEM_BY_KEY
+    local custom_items = Manager.getShortcutDataItems()
+    if #custom_items > 0 then
+        item_lookup = setmetatable({}, { __index = ITEM_BY_KEY })
+        for _i, ci in ipairs(custom_items) do
+            item_lookup[ci.key] = ci
+        end
+    end
 
     -- 1. Build item list: { widget=..., is_spacer=bool }
     local items = {}
     for token in string.gmatch(config.items, "([^,]+)") do
         local key = token:match("^%s*(.-)%s*$")
-        if key == "spacer" then
+        if key == "spacer" or key == "spacer2" then
             table.insert(items, { is_spacer = true })
         elseif key == "time" then
             table.insert(items, { widget = createTimeButton(padding_h) })
@@ -274,22 +324,37 @@ local function createShortcutsBar(menu, config, reserved_left)
         else
             local def = shortcut_defs[key]
             if def then
+                local data         = item_lookup[key]
+                -- def.icon overrides for dynamic cases (e.g. wifi initial state);
+                -- otherwise fall back to the icon defined in shortcuts_data.
+                local initial_icon = def.icon or (data and data.icon)
+                local label        = data and data.label or key
                 local btn
+                local hold_label_fn = def.get_label
                 btn = IconButton:new{
-                    icon          = def.icon,
+                    icon          = initial_icon,
                     width         = icon_size,
                     height        = icon_size,
                     padding_top   = Screen:scaleBySize(2),
                     padding_left  = padding_h,
                     padding_right = padding_h,
                     callback      = function() def.callback(btn) end,
-                    hold_callback = function()
+                    hold_callback = def.hold_callback or function()
                         UIManager:show(InfoMessage:new{
-                            text    = def.description,
+                            text    = hold_label_fn and hold_label_fn() or label,
                             timeout = 1,
                         })
                     end,
                 }
+                -- If shortcuts_data provides a bundled SVG path, swap the inner
+                -- IconWidget for a file-based one after init.
+                local icon_file = data and data.icon_file
+                if icon_file then
+                    local img = IconWidget:new{ file = icon_file, width = icon_size, height = icon_size }
+                    btn.image               = img
+                    btn.horizontal_group[2] = img
+                    btn:update()
+                end
                 table.insert(items, { widget = btn })
             end
         end
@@ -343,7 +408,7 @@ end
 -- ==========================================================================
 
 --- Build the full home-state content widget inserted into the reader menu.
-local function createHomeContent(menu, config)
+createHomeContent = function(menu, config, reset_fn)
     local total_w = menu.width
 
     -- ---- Top row: book info (left) + time / battery (right) ----
@@ -432,7 +497,7 @@ local function createHomeContent(menu, config)
         }
     end
 
-    local shortcuts_bar = createShortcutsBar(menu, config, back_btn and back_btn:getSize().w or 0)
+    local shortcuts_bar = createShortcutsBar(menu, config, reset_fn, back_btn and back_btn:getSize().w or 0)
 
     local bottom_h   = math.max(shortcuts_bar:getSize().h, back_btn and back_btn:getSize().h or 0)
     local bottom_row = createSplitRow(total_w, bottom_h, back_btn, shortcuts_bar)

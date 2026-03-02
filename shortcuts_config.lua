@@ -9,6 +9,7 @@ and the arrow buttons to reorder within the active bar.
 local Blitbuffer       = require("ffi/blitbuffer")
 local Button           = require("ui/widget/button")
 local CenterContainer  = require("ui/widget/container/centercontainer")
+local IconWidget       = require("ui/widget/iconwidget")
 local Device           = require("device")
 local Font             = require("ui/font")
 local FrameContainer   = require("ui/widget/container/framecontainer")
@@ -101,7 +102,7 @@ function ShortcutsConfigDialog:_buildCell(bar, idx, override_w)
     end
 
     -- Spacer: always visible light border, expand arrow
-    if key == "spacer" then
+    if key == "spacer" or key == "spacer2" then
         local w = override_w or SPACER_W_DISABLED
         return Button:new{
             text           = "\xe2\x86\x94",  -- ↔
@@ -115,9 +116,10 @@ function ShortcutsConfigDialog:_buildCell(bar, idx, override_w)
         }
     end
 
-    if info.icon then
-        return Button:new{
-            icon        = info.icon,
+    if info.icon or info.icon_file then
+        -- Build Button in icon-mode (named icon, or a placeholder for geometry)
+        local btn = Button:new{
+            icon        = info.icon or "notice-info",
             icon_width  = CELL_ICON,
             icon_height = CELL_ICON,
             width       = CELL_SIZE,
@@ -126,6 +128,14 @@ function ShortcutsConfigDialog:_buildCell(bar, idx, override_w)
             bordersize  = border_thick,
             callback    = on_tap,
         }
+        -- For file-based icons, swap out the internal IconWidget so the correct image shows.
+        if info.icon_file then
+            local img = IconWidget:new{ file = info.icon_file, width = CELL_ICON, height = CELL_ICON }
+            if btn.label_widget then btn.label_widget:free() end
+            btn.label_widget = img
+            if btn.label_container then btn.label_container[1] = img end
+        end
+        return btn
     else
         -- Build a stable explicit width based on the WIDEST possible text,
         -- so row-splitting is consistent no matter what the current time/battery is.
@@ -194,7 +204,7 @@ function ShortcutsConfigDialog:_buildBar(bar, bar_width)
     local cells = {}
     for idx = 1, #keys do
         local k = keys[idx]
-        if k == "spacer" then
+        if k == "spacer" or k == "spacer2" then
             table.insert(cells, { idx = idx, is_spacer = true })
         else
             local widget = self:_buildCell(bar, idx, nil)
@@ -241,6 +251,15 @@ function ShortcutsConfigDialog:_buildBar(bar, bar_width)
 end
 
 function ShortcutsConfigDialog:init()
+    -- Augment the static ITEM_BY_KEY with any custom shortcuts defined by the
+    -- user so that their labels and icons are resolved correctly in the dialog.
+    local ok, Manager = pcall(require, "custom_shortcut_manager")
+    if ok then
+        for _i, item in ipairs(Manager.getShortcutDataItems()) do
+            ITEM_BY_KEY[item.key] = item
+        end
+    end
+
     self.dimen = Screen:getSize()
 
     local sw = Screen:getWidth()

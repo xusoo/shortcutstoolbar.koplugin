@@ -1,0 +1,25 @@
+-- Copy this file to your KOReader user patches directory and rename it to:
+--   2-readertoolbar-custom-shortcut.lua
+
+local userpatch = require("userpatch")
+
+userpatch.registerPatchPluginFunc("readertoolbar", function()
+    local ok, Shortcuts = pcall(require, "custom_shortcut_manager")
+    if not ok then return end
+
+    local UIManager = require("ui/uimanager")
+    local InfoMessage = require("ui/widget/infomessage")
+    local _ = require("gettext")
+
+    Shortcuts.ensureShortcut{
+        id = "sample.hello_world",
+        name = _("Hello"),
+        icon_file = Shortcuts.getBundledIcon("smile.svg"),
+        callback = function()
+            UIManager:show(InfoMessage:new{
+                text = _("Hello world!"),
+                timeout = 2,
+            })
+        end,
+    }
+end)

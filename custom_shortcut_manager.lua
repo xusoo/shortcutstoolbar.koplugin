@@ -2,50 +2,182 @@
 Custom Shortcut Manager
 =======================
 Manages user-defined toolbar shortcuts. Each shortcut has a name, an optional
-icon (path to an SVG/PNG file), and either a recorded menu navigation path or
-a dispatcher-backed system action.
+icon (path to an SVG/PNG file), and either:
+  - a patch-registered callback
+  - a recorded menu navigation path
+  - a dispatcher-backed system action
 
 Shortcuts are stored separately per view:
   G_reader_settings["shortcutstoolbar_custom_shortcuts_reader"]
   G_reader_settings["shortcutstoolbar_custom_shortcuts_fb"]
 
 Each entry:
+    { key="cs_xxx", id="patch.hello", name="Hello", icon_file="/path/icon.svg", patch_callback=true }
     { key="cs_xxx", name="My shortcut", icon_file="/path/icon.svg", path_record={...} }
     { key="cs_xxx", name="Sleep", icon_file="/path/icon.svg", dispatcher_action="suspend", dispatcher_label="Sleep" }
 
-Public API  (all functions take a `view` parameter: "reader" or "fb")
+Public API
 ----------
-  M.loadAll(view)                                    → list of shortcut tables
-  M.upsert(shortcut, view)                           – create or update by key
-  M.find(key, view)                                  → shortcut table or nil
-  M.delete(key, view)                                – removes shortcut and its settings keys
-  M.clearAll(view)                                   – wipe everything for a view (for reset)
-  M.getShortcutDataItems(view)                       → list in shortcuts_data format
-    M.getActionDescription(shortcut)                   → human-readable action source + label
-    M.execute(shortcut, menu)                          – run the stored action via menu replay or dispatcher
-  M.buildSubItems(on_refresh, view)                  → sub_item_table for the menu
-  M.openEditDialog(shortcut, menu, on_close, view)   – show create/edit dialog
+  M.loadAll(view)                                    -> list of shortcut tables
+  M.upsert(shortcut, view)                           - create or update by key
+  M.find(key, view)                                  -> shortcut table or nil
+  M.findById(id, view)                               -> shortcut table or nil
+  M.delete(key, view)                                - removes shortcut and its settings keys
+  M.ensureShortcut(spec)                             - idempotent patch helper using a callback
+  M.upsertShortcut(spec)                             - alias of ensureShortcut
+  M.deleteShortcut(id_or_spec, view)                 - patch-friendly delete helper
+  M.getBundledIcon(name)                             - absolute path to a bundled icon
+  M.clearAll(view)                                   - wipe everything for a view (for reset)
+  M.getShortcutDataItems(view)                       -> list in shortcuts_data format
+  M.getActionDescription(shortcut)                   -> human-readable action source + label
+  M.execute(shortcut, menu)                          - run the stored action via callback, menu replay, or dispatcher
+  M.buildSubItems(on_refresh, view)                  -> sub_item_table for the menu
+  M.openEditDialog(shortcut, menu, on_close, view)   - show create/edit dialog
 --]]
 
 local PLUGIN_DIR = debug.getinfo(1, "S").source:gsub("^@(.*)/[^/]*", "%1")
-local ICON_DIR   = PLUGIN_DIR .. "/icons"
+local ICON_DIR = PLUGIN_DIR .. "/icons"
+local PATCH_CALLBACKS_KEY = "__readertoolbar_patch_shortcut_callbacks"
+local PATCH_VIEWS = { "reader", "fb", "simpleui" }
+
+if not package.path:find(PLUGIN_DIR, 1, true) then
+    package.path = string.format("%s/?.lua;%s", PLUGIN_DIR, package.path)
+end
 
 local function settingsKey(view)
-    return "shortcutstoolbar_custom_shortcuts_" .. (view or "reader")
+    return "shortcutstoolbar_custom_shortcuts_" .. ((view == "filebrowser") and "fb" or (view or "reader"))
+end
+
+local function viewSettingsKey(view)
+    return "shortcutstoolbar_" .. ((view == "filebrowser") and "fb" or (view or "reader"))
 end
 
 local IconBrowser = require("icon_browser")
 local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
-local UIManager   = require("ui/uimanager")
-local _           = require("gettext")
-local T           = require("ffi/util").template
+local UIManager = require("ui/uimanager")
+local _ = require("gettext")
+local T = require("ffi/util").template
 
 local DispatcherActions = require("dispatcher_actions")
 local Picker = require("custom_shortcut_picker")
 
 local M = {}
+
+local function fail(message)
+    error("readertoolbar custom shortcut: " .. message, 2)
+end
+
+local function cloneTable(value)
+    if type(value) ~= "table" then return value end
+
+    local copy = {}
+    for key, item in pairs(value) do
+        copy[key] = cloneTable(item)
+    end
+    return copy
+end
+
+function M.normalizeView(view)
+    if view == nil then return "reader" end
+    if view == "filebrowser" then return "fb" end
+    if type(view) ~= "string" or view == "" then
+        fail("view must be a non-empty string")
+    end
+    return view
+end
+
+local function normalizeViews(views)
+    if views == nil then
+        return cloneTable(PATCH_VIEWS)
+    end
+
+    if type(views) ~= "table" then
+        return { M.normalizeView(views) }
+    end
+
+    local normalized = {}
+    local seen = {}
+    for _, view in ipairs(views) do
+        local item = M.normalizeView(view)
+        if not seen[item] then
+            seen[item] = true
+            normalized[#normalized + 1] = item
+        end
+    end
+
+    if #normalized == 0 then
+        fail("view list must not be empty")
+    end
+    return normalized
+end
+
+local function candidateViews(view)
+    return normalizeViews(view)
+end
+
+local function getPatchCallbackRegistry()
+    local registry = rawget(_G, PATCH_CALLBACKS_KEY)
+    if registry then return registry end
+
+    registry = {}
+    rawset(_G, PATCH_CALLBACKS_KEY, registry)
+    return registry
+end
+
+local function registerPatchCallback(id, view, callback)
+    local registry = getPatchCallbackRegistry()
+    view = M.normalizeView(view)
+    registry[view] = registry[view] or {}
+    registry[view][id] = callback
+end
+
+local function unregisterPatchCallback(id, view)
+    if not id then return end
+
+    local registry = getPatchCallbackRegistry()
+    for _, candidate in ipairs(candidateViews(view)) do
+        if registry[candidate] then
+            registry[candidate][id] = nil
+        end
+    end
+end
+
+local function getPatchCallback(shortcut, view)
+    if not shortcut or not shortcut.id then return nil end
+
+    local registry = getPatchCallbackRegistry()
+    for _, candidate in ipairs(candidateViews(view)) do
+        local callbacks = registry[candidate]
+        if callbacks and callbacks[shortcut.id] then
+            return callbacks[shortcut.id], candidate
+        end
+    end
+    return nil
+end
+
+local function findShortcutByRef(ref, view)
+    if type(ref) ~= "table" and type(ref) ~= "string" then
+        return nil, nil
+    end
+
+    for _, candidate in ipairs(candidateViews(view)) do
+        for _i, shortcut in ipairs(M.loadAll(candidate)) do
+            if type(ref) == "table" then
+                if (ref.key and shortcut.key == ref.key) or (ref.id and shortcut.id == ref.id) then
+                    return shortcut, candidate
+                end
+            else
+                if shortcut.id == ref or shortcut.key == ref then
+                    return shortcut, candidate
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
 
 local function isMenuVisible(menu)
     local target = menu and menu.show_parent
@@ -94,33 +226,27 @@ local function finishPicking(menu, saved_state, reopen_dialog)
     end)
 end
 
--- ==========================================================================
--- Key generation
--- ==========================================================================
-
 local _counter = 0
 local function newKey()
     _counter = _counter + 1
     return string.format("cs_%d_%d", math.floor(os.time()), _counter)
 end
 
--- ==========================================================================
--- Data model
--- ==========================================================================
-
 function M.loadAll(view)
+    view = M.normalizeView(view)
     return G_reader_settings:readSetting(settingsKey(view)) or {}
 end
 
 function M.saveAll(items, view)
+    view = M.normalizeView(view)
     G_reader_settings:saveSetting(settingsKey(view), items)
 end
 
---- Create or update a shortcut entry (matched by key).
 function M.upsert(shortcut, view)
+    view = M.normalizeView(view)
     local all = M.loadAll(view)
-    for i, s in ipairs(all) do
-        if s.key == shortcut.key then
+    for i, stored in ipairs(all) do
+        if stored.key == shortcut.key then
             all[i] = shortcut
             M.saveAll(all, view)
             return
@@ -130,75 +256,86 @@ function M.upsert(shortcut, view)
     M.saveAll(all, view)
 end
 
---- Find a shortcut by key, or nil.
 function M.find(key, view)
-    for _i, s in ipairs(M.loadAll(view)) do
-        if s.key == key then return s end
+    view = M.normalizeView(view)
+    for _i, shortcut in ipairs(M.loadAll(view)) do
+        if shortcut.key == key then return shortcut end
     end
     return nil
 end
 
---- Delete a shortcut and clean up its associated settings keys.
+function M.findById(id, view)
+    local shortcut = select(1, findShortcutByRef({ id = id }, view))
+    return shortcut
+end
+
 function M.delete(key, view)
+    view = M.normalizeView(view)
     local all = M.loadAll(view)
-    for i, s in ipairs(all) do
-        if s.key == key then
+    for i, shortcut in ipairs(all) do
+        if shortcut.key == key then
             table.remove(all, i)
             M.saveAll(all, view)
-            -- Remove per-item flag and prune order CSV from the view table.
-            local stored = G_reader_settings:readSetting("shortcutstoolbar_" .. view) or {}
+            unregisterPatchCallback(shortcut.id, view)
+
+            local stored = G_reader_settings:readSetting(viewSettingsKey(view)) or {}
             if stored.items then stored.items[key] = nil end
             if stored.item_order then
                 local parts = {}
-                for k in stored.item_order:gmatch("([^,]+)") do
-                    if k ~= key then table.insert(parts, k) end
+                for item_key in stored.item_order:gmatch("([^,]+)") do
+                    if item_key ~= key then table.insert(parts, item_key) end
                 end
                 stored.item_order = table.concat(parts, ",")
             end
-            G_reader_settings:saveSetting("shortcutstoolbar_" .. view, stored)
+            G_reader_settings:saveSetting(viewSettingsKey(view), stored)
             return
         end
     end
 end
 
---- Wipe all custom shortcuts for a view and remove them from its per-view table.
 function M.clearAll(view)
-    local all  = M.loadAll(view)
+    view = M.normalizeView(view)
+    local all = M.loadAll(view)
     local keys = {}
-    for _i, s in ipairs(all) do keys[s.key] = true end
-    local stored = G_reader_settings:readSetting("shortcutstoolbar_" .. view) or {}
+    for _i, shortcut in ipairs(all) do
+        keys[shortcut.key] = true
+        unregisterPatchCallback(shortcut.id, view)
+    end
+
+    local stored = G_reader_settings:readSetting(viewSettingsKey(view)) or {}
     if stored.items then
-        for k in pairs(keys) do stored.items[k] = nil end
+        for key in pairs(keys) do stored.items[key] = nil end
     end
     if stored.item_order then
         local parts = {}
-        for k in stored.item_order:gmatch("([^,]+)") do
-            if not keys[k] then table.insert(parts, k) end
+        for key in stored.item_order:gmatch("([^,]+)") do
+            if not keys[key] then table.insert(parts, key) end
         end
         stored.item_order = table.concat(parts, ",")
     end
-    G_reader_settings:saveSetting("shortcutstoolbar_" .. view, stored)
+    G_reader_settings:saveSetting(viewSettingsKey(view), stored)
     G_reader_settings:delSetting(settingsKey(view))
 end
 
---- Return custom shortcuts in shortcuts_data item format for ITEM_BY_KEY /
--- readConfig ingestion.
 function M.getShortcutDataItems(view)
     local result = {}
-    for _i, s in ipairs(M.loadAll(view)) do
+    for _i, shortcut in ipairs(M.loadAll(view)) do
         table.insert(result, {
-            key       = s.key,
-            label     = (s.name and s.name ~= "") and s.name or _("Custom shortcut"),
-            icon      = "appbar.settings",
-            icon_file = s.icon_file,
-            default   = false,
+            key = shortcut.key,
+            label = (shortcut.name and shortcut.name ~= "") and shortcut.name or _("Custom shortcut"),
+            icon = shortcut.icon or "appbar.settings",
+            icon_file = shortcut.icon_file,
+            default = false,
             is_custom = true,
         })
     end
     return result
 end
 
-function M.getActionSource(shortcut)
+function M.getActionSource(shortcut, view)
+    if getPatchCallback(shortcut, view) or (shortcut and shortcut.patch_callback) then
+        return "callback"
+    end
     if shortcut and shortcut.dispatcher_action and shortcut.dispatcher_action ~= "" then
         return "system"
     end
@@ -208,8 +345,11 @@ function M.getActionSource(shortcut)
     return nil
 end
 
-function M.getActionLabel(shortcut)
-    local source = M.getActionSource(shortcut)
+function M.getActionLabel(shortcut, view)
+    local source = M.getActionSource(shortcut, view)
+    if source == "callback" then
+        return shortcut.callback_label or shortcut.name or _("Patch callback")
+    end
     if source == "system" then
         return shortcut.dispatcher_label or shortcut.dispatcher_action
     end
@@ -221,6 +361,9 @@ end
 
 function M.getActionDescription(shortcut)
     local source = M.getActionSource(shortcut)
+    if source == "callback" then
+        return T(_("%1 | %2"), _("Patch callback"), M.getActionLabel(shortcut))
+    end
     if source == "system" then
         return T(_("%1 | %2"), _("System action"), M.getActionLabel(shortcut))
     end
@@ -238,6 +381,24 @@ function M.execute(shortcut, menu)
     if not shortcut then return false end
 
     local source = M.getActionSource(shortcut)
+    if source == "callback" then
+        local callback = getPatchCallback(shortcut)
+        if not callback then
+            UIManager:show(InfoMessage:new{
+                text = _("Patch callback not available. Restart KOReader or reload the patch."),
+                timeout = 3,
+            })
+            return false
+        end
+        local ok, err = pcall(callback, menu, shortcut)
+        if not ok then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Patch callback error: %1"), tostring(err)),
+                timeout = 3,
+            })
+        end
+        return ok
+    end
     if source == "system" then
         local ok, err = DispatcherActions.execute(shortcut.dispatcher_action)
         if not ok then
@@ -259,61 +420,155 @@ function M.execute(shortcut, menu)
     return false
 end
 
--- ==========================================================================
--- Edit dialog
--- ==========================================================================
+local function normalizeShortcutSpec(spec, existing, existing_view)
+    if type(spec) ~= "table" then
+        fail("shortcut spec must be a table")
+    end
 
---- Open the create/edit dialog.
--- @param shortcut  Existing shortcut table, or nil to create a new one.
--- @param menu      The live TouchMenu instance (needed for the action picker).
--- @param on_close  function() called after any save or delete.
--- @param view      "reader" or "fb" – which shortcut pool this belongs to.
+    local view = M.normalizeView(existing_view or spec.view or "reader")
+    local normalized = existing and cloneTable(existing) or {}
+
+    normalized.key = (existing and existing.key) or spec.key or newKey()
+    normalized.id = spec.id or spec.patch_id or normalized.id
+    if not normalized.id then
+        fail("shortcut spec requires id")
+    end
+
+    if spec.name ~= nil then
+        normalized.name = spec.name
+    elseif spec.label ~= nil then
+        normalized.name = spec.label
+    elseif not normalized.name or normalized.name == "" then
+        normalized.name = _("Custom shortcut")
+    end
+
+    if spec.icon ~= nil or spec.icon_file ~= nil then
+        normalized.icon = spec.icon or nil
+        normalized.icon_file = spec.icon_file or nil
+    end
+
+    normalized.patch_callback = true
+    normalized.callback_label = spec.callback_label or normalized.name or _("Patch callback")
+    normalized.path_record = nil
+    normalized.dispatcher_action = nil
+    normalized.dispatcher_label = nil
+
+    return normalized, view
+end
+
+function M.ensureShortcut(spec)
+    if type(spec) ~= "table" then
+        fail("shortcut spec must be a table")
+    end
+    if type(spec.callback) ~= "function" then
+        fail("shortcut spec requires callback")
+    end
+
+    local results = {}
+    local views = normalizeViews(spec.view)
+    for _, view in ipairs(views) do
+        local existing = select(1, findShortcutByRef(spec, view))
+        local shortcut = select(1, normalizeShortcutSpec(spec, existing, view))
+
+        registerPatchCallback(shortcut.id, view, spec.callback)
+        M.upsert(shortcut, view)
+        results[view] = M.find(shortcut.key, view)
+    end
+
+    if #views == 1 then
+        return results[views[1]]
+    end
+    return results
+end
+
+function M.upsertShortcut(spec)
+    return M.ensureShortcut(spec)
+end
+
+function M.deleteShortcut(ref, view)
+    local deleted = false
+    for _, candidate in ipairs(normalizeViews(view or (type(ref) == "table" and ref.view) or nil)) do
+        local existing, resolved_view = findShortcutByRef(ref, candidate)
+        if existing and resolved_view then
+            M.delete(existing.key, resolved_view)
+            deleted = true
+        end
+    end
+    return deleted
+end
+
+function M.getBundledIcon(name)
+    if type(name) ~= "string" or name == "" then
+        fail("icon name must be a non-empty string")
+    end
+    return ICON_DIR .. "/" .. name:gsub("^/+", "")
+end
+
 function M.openEditDialog(shortcut, menu, on_close, view)
-    view = view or "reader"
+    view = M.normalizeView(view or "reader")
     local is_new = (shortcut == nil)
-    -- Work on a shallow copy so mutations don't persist unless the user saves.
+    local original_name = shortcut and shortcut.name or nil
+    local original_callback_label = shortcut and shortcut.callback_label or nil
     local sc = shortcut and {
-        key         = shortcut.key,
-        name        = shortcut.name,
-        icon_file   = shortcut.icon_file,
+        key = shortcut.key,
+        id = shortcut.id,
+        name = shortcut.name,
+        icon = shortcut.icon,
+        icon_file = shortcut.icon_file,
+        patch_callback = shortcut.patch_callback,
+        callback_label = shortcut.callback_label,
         path_record = shortcut.path_record,
         dispatcher_action = shortcut.dispatcher_action,
         dispatcher_label = shortcut.dispatcher_label,
     } or {
-        key         = newKey(),
-        name        = "",
-        icon_file   = nil,
+        key = newKey(),
+        id = nil,
+        name = "",
+        icon = nil,
+        icon_file = nil,
+        patch_callback = nil,
+        callback_label = nil,
         path_record = nil,
         dispatcher_action = nil,
         dispatcher_label = nil,
     }
 
     local action_label = M.getActionDescription(sc)
-    local icon_label   = sc.icon_file and sc.icon_file:match("[^/]+$") or _("Default")
+    local icon_label = sc.icon_file and sc.icon_file:match("[^/]+$") or sc.icon or _("Default")
 
     local dialog
 
     local function doSave()
         local name = dialog:getInputText()
         sc.name = (name ~= "") and name or _("Custom shortcut")
+        if sc.patch_callback then
+            if not original_callback_label or original_callback_label == original_name or original_callback_label == _("Patch callback") then
+                sc.callback_label = sc.name
+            end
+        end
         M.upsert(sc, view)
         UIManager:close(dialog)
         if on_close then on_close() end
     end
 
-    -- Close and reopen the dialog (e.g. after picking an icon) preserving
-    -- the current name the user typed.
     local function refresh(updated_sc)
         UIManager:close(dialog)
         M.openEditDialog(updated_sc or sc, menu, on_close, view)
     end
 
     local function snapshotName()
-        local n = dialog:getInputText()
-        if n ~= "" then sc.name = n end
+        local name = dialog:getInputText()
+        if name ~= "" then sc.name = name end
+    end
+
+    local function clearPatchCallback()
+        unregisterPatchCallback(sc.id, view)
+        sc.patch_callback = nil
+        sc.callback_label = nil
     end
 
     local function applyMenuAction(path_record)
+        clearPatchCallback()
         sc.path_record = path_record
         sc.dispatcher_action = nil
         sc.dispatcher_label = nil
@@ -323,6 +578,7 @@ function M.openEditDialog(shortcut, menu, on_close, view)
     end
 
     local function applySystemAction(action)
+        clearPatchCallback()
         sc.path_record = nil
         sc.dispatcher_action = action.id
         sc.dispatcher_label = action.title
@@ -376,22 +632,21 @@ function M.openEditDialog(shortcut, menu, on_close, view)
 
     local function openMenuActionPicker()
         if view ~= "reader" or (menu and menu._is_fb_context) then
-            -- FB shortcut: open the live FM menu for picking.
             local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
             if not (ok and FileManager.instance and not FileManager.instance.tearing_down) then
                 UIManager:show(InfoMessage:new{
-                    text    = _("Open the file browser first to set this shortcut action."),
+                    text = _("Open the file browser first to set this shortcut action."),
                     timeout = 3,
                 })
                 reopenCurrentDialog()
                 return
             end
             FileManager.instance.menu:onShowMenu(nil)
-            local mc = FileManager.instance.menu.menu_container
-            local real_menu = mc and mc[1]
+            local menu_container = FileManager.instance.menu.menu_container
+            local real_menu = menu_container and menu_container[1]
             if not real_menu then
                 UIManager:show(InfoMessage:new{
-                    text    = _("Could not open the file browser menu."),
+                    text = _("Could not open the file browser menu."),
                     timeout = 3,
                 })
                 reopenCurrentDialog()
@@ -413,19 +668,16 @@ function M.openEditDialog(shortcut, menu, on_close, view)
             return
         end
 
-        -- Reader shortcut: requires the reader menu to be open.
         if not menu or not menu.updateItems then
             UIManager:show(InfoMessage:new{
-                text    = _("Open a book first to set this shortcut action."),
+                text = _("Open a book first to set this shortcut action."),
                 timeout = 3,
             })
             reopenCurrentDialog()
             return
         end
 
-        -- Save the full menu state so we can return here after picking.
         local saved_state = snapshotMenuState(menu)
-        -- Drain any sub-menu stack so picking starts from the tab root.
         if menu.item_table_stack then
             while #menu.item_table_stack > 0 do
                 menu.item_table = table.remove(menu.item_table_stack)
@@ -492,36 +744,34 @@ function M.openEditDialog(shortcut, menu, on_close, view)
     end
 
     local buttons = {
-        -- Row 1 ── Cancel / Save
         {
             {
-                text     = _("Cancel"),
+                text = _("Cancel"),
                 callback = function() UIManager:close(dialog) end,
             },
             {
-                text             = _("Save"),
+                text = _("Save"),
                 is_enter_default = true,
-                callback         = doSave,
+                callback = doSave,
             },
         },
-        -- Row 2 ── Set action / Choose icon
         {
             {
-                text     = T(_("Action: %1"), action_label),
+                text = T(_("Action: %1"), action_label),
                 callback = function()
                     snapshotName()
                     UIManager:close(dialog)
-
                     openActionSourcePicker()
                 end,
             },
             {
-                text     = T(_("Icon: %1"), icon_label),
+                text = T(_("Icon: %1"), icon_label),
                 callback = function()
                     snapshotName()
                     UIManager:show(IconBrowser:new{
-                        path      = ICON_DIR,
+                        path = ICON_DIR,
                         onConfirm = function(file_path)
+                            sc.icon = nil
                             sc.icon_file = file_path
                             UIManager:scheduleIn(0, function() refresh(sc) end)
                         end,
@@ -531,16 +781,15 @@ function M.openEditDialog(shortcut, menu, on_close, view)
         },
     }
 
-    -- Row 3 ── Delete (only for existing shortcuts)
     if not is_new then
         local ConfirmBox = require("ui/widget/confirmbox")
         table.insert(buttons, {
             {
-                text     = _("Delete shortcut"),
+                text = _("Delete shortcut"),
                 callback = function()
                     UIManager:show(ConfirmBox:new{
-                        text        = T(_("Delete \"%1\"?"), sc.name or sc.key),
-                        ok_text     = _("Delete"),
+                        text = T(_("Delete \"%1\"?"), sc.name or sc.key),
+                        ok_text = _("Delete"),
                         ok_callback = function()
                             UIManager:close(dialog)
                             M.delete(sc.key, view)
@@ -553,56 +802,45 @@ function M.openEditDialog(shortcut, menu, on_close, view)
     end
 
     dialog = InputDialog:new{
-        title      = is_new and _("New custom shortcut") or _("Edit custom shortcut"),
-        input      = sc.name or "",
+        title = is_new and _("New custom shortcut") or _("Edit custom shortcut"),
+        input = sc.name or "",
         input_hint = _("Shortcut name"),
-        buttons    = buttons,
+        buttons = buttons,
     }
     UIManager:show(dialog)
 end
 
--- ==========================================================================
--- Sub-menu items for the "Custom shortcuts" reader-menu entry
--- ==========================================================================
-
---- Build the dynamic sub_item_table for the "Custom shortcuts" menu entry.
--- Each item's callback receives the touchmenu_instance so the edit dialog
--- gets access to the live menu for the action picker.
--- @param on_refresh  function() called after any save/delete (e.g. readConfig).
--- @param view        "reader" or "fb"
 function M.buildSubItems(on_refresh, view)
-    view = view or "reader"
+    view = M.normalizeView(view or "reader")
     local all = M.loadAll(view)
     local items = {}
 
-    -- Wrapper: after save/delete, call on_refresh then rebuild the sub-menu
-    -- inside the live TouchMenu instance so the list stays in sync.
-    local function make_on_close(tm)
+    local function make_on_close(touchmenu)
         return function()
             if on_refresh then on_refresh() end
-            tm.item_table = M.buildSubItems(on_refresh, view)
-            tm:updateItems()
+            touchmenu.item_table = M.buildSubItems(on_refresh, view)
+            touchmenu:updateItems()
         end
     end
 
     table.insert(items, {
-        text           = _("Add new shortcut"),
-        callback       = function(tm)
-            M.openEditDialog(nil, tm, make_on_close(tm), view)
+        text = _("Add new shortcut"),
+        callback = function(touchmenu)
+            M.openEditDialog(nil, touchmenu, make_on_close(touchmenu), view)
         end,
         keep_menu_open = true,
-        separator      = #all > 0,
+        separator = #all > 0,
     })
 
-    for _i, sc in ipairs(all) do
-        local sc_ref = sc  -- capture
-        local action = M.getActionDescription(sc_ref):lower()
+    for _i, shortcut in ipairs(all) do
+        local shortcut_ref = shortcut
+        local action = M.getActionDescription(shortcut_ref):lower()
         table.insert(items, {
-            text           = (sc.name and sc.name ~= "") and sc.name or _("Unnamed shortcut"),
-            mandatory      = action,
+            text = (shortcut.name and shortcut.name ~= "") and shortcut.name or _("Unnamed shortcut"),
+            mandatory = action,
             keep_menu_open = true,
-            callback       = function(tm)
-                M.openEditDialog(sc_ref, tm, make_on_close(tm), view)
+            callback = function(touchmenu)
+                M.openEditDialog(shortcut_ref, touchmenu, make_on_close(touchmenu), view)
             end,
         })
     end

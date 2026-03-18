@@ -39,6 +39,8 @@ local items = {
     { key = "cloud_storage",  label = _("Cloud storage"),  fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/cloud.svg" },
     { key = "calendar_stats", label = _("Calendar statistics"),                  icon_file = PLUGIN_DIR .. "/icons/calendar.svg" },
     { key = "favorites",      label = _("Favorites"),      fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/heart.svg" },
+    { key = "collections",    label = _("Collections"),    fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/folder.svg" },
+    { key = "file_search",    label = _("File search"),    fb_only = true,       icon = "appbar.search" },
     { key = "restart",        label = _("Restart KOReader"),                     icon_file = PLUGIN_DIR .. "/icons/power.svg" },
     { key = "spacer",         label = _("Spacer"),                               icon = nil },
     { key = "spacer2",        label = _("Spacer"),                               icon = nil },
@@ -50,7 +52,6 @@ items.reader_defaults = {
     "font",
     "frontlight",
     "night_mode",
-    "wifi",
     "bookmarks",
     "search",
 }
@@ -58,10 +59,12 @@ items.reader_defaults = {
 -- Ordered list of keys enabled by default in the file-browser toolbar.
 -- The order here also defines the initial display order on first run.
 items.fb_defaults = {
-    "frontlight",
-    "wifi",
-    "cloud_storage",
+    "file_search",
+    "collections",
     "favorites",
+    "cloud_storage",
+    "spacer",
+    "wifi",
     "time",
     "battery",
 }

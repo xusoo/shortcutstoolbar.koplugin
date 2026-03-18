@@ -284,6 +284,34 @@ local function buildShortcutDefs(menu, config, on_refresh)
                 end
             end,
         },
+        collections = {
+            callback = function()
+                local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+                if ok and FileManager.instance and not FileManager.instance.tearing_down
+                        and FileManager.instance.collections then
+                    FileManager.instance.collections:onShowCollList()
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Collections are only available in the file browser."),
+                        timeout = 2,
+                    })
+                end
+            end,
+        },
+        file_search = {
+            callback = function()
+                local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+                if ok and FileManager.instance and not FileManager.instance.tearing_down
+                        and FileManager.instance.filesearcher then
+                    FileManager.instance.filesearcher:onShowFileSearch()
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("File search is only available in the file browser."),
+                        timeout = 2,
+                    })
+                end
+            end,
+        },
         restart = {
             callback = function()
                 UIManager:show(ConfirmBox:new{

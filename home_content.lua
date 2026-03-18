@@ -6,7 +6,8 @@ Builds the reader-menu "home" area shown when no tab is selected:
   • Bottom row – "Back to library" button (left) and shortcuts icons (right)
 
 Exports:
-  createHomeContent(menu, config)
+    M.createHomeContent(menu, config)
+    M.createShortcutsBar(menu, config, reset_fn, reserved_left)
 --]]
 
 local BD       = require("ui/bidi")
@@ -32,6 +33,7 @@ local ITEM_BY_KEY = {}
 for _, item in ipairs(SHORTCUT_DATA) do ITEM_BY_KEY[item.key] = item end
 
 local Button          = require("ui/widget/button")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox      = require("ui/widget/confirmbox")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -68,7 +70,7 @@ end
 
 --- Close the menu by firing its close_callback (safe no-op when absent).
 local function closeMenu(menu)
-    if menu.close_callback then menu.close_callback() end
+    if menu and menu.close_callback then menu.close_callback() end
 end
 
 --- Shared time button used by both the top-right widget and the shortcuts bar.
@@ -166,6 +168,7 @@ end
 -- Forward declaration so createShortcutsBar (below) can reference createHomeContent
 -- inside the on_refresh closure without a forward-reference error.
 local createHomeContent
+local M = {}
 
 --- Build the table of shortcut callbacks for the given menu.
 -- icon, icon_file, and label come from shortcuts_data (ITEM_BY_KEY);
@@ -439,7 +442,7 @@ local function createShortcutsBar(menu, config, reset_fn, reserved_left)
     -- 4. Build widget: rows stacked vertically.
     local v_pad  = Screen:scaleBySize(6)
     local row_gap = Screen:scaleBySize(4)
-    local vg = VerticalGroup:new{ align = "right", is_shortcuts_bar = true }
+    local vg = VerticalGroup:new{ align = config.align or "right", is_shortcuts_bar = true }
     table.insert(vg, VerticalSpan:new{ width = v_pad })
     for ri, row in ipairs(rows) do
         -- Resolve spacer widths for this row.
@@ -460,7 +463,16 @@ local function createShortcutsBar(menu, config, reset_fn, reserved_left)
                 or  item.widget)
         end
         table.insert(hg, HorizontalSpan:new{ width = h_margin })
-        table.insert(vg, hg)
+
+        local row_widget = hg
+        if config.align == "center" then
+            row_widget = CenterContainer:new{
+                dimen = Geom:new{ w = menu.width, h = hg:getSize().h },
+                hg,
+            }
+        end
+
+        table.insert(vg, row_widget)
         if ri < #rows then
             table.insert(vg, VerticalSpan:new{ width = row_gap })
         end
@@ -579,4 +591,7 @@ createHomeContent = function(menu, config, reset_fn)
     return combined
 end
 
-return createHomeContent
+M.createHomeContent = createHomeContent
+M.createShortcutsBar = createShortcutsBar
+
+return M

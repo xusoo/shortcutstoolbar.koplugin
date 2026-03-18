@@ -375,7 +375,7 @@ function M.openEditDialog(shortcut, menu, on_close, view)
     end
 
     local function openMenuActionPicker()
-        if view == "fb" or (menu and menu._is_fb_context) then
+        if view ~= "reader" or (menu and menu._is_fb_context) then
             -- FB shortcut: open the live FM menu for picking.
             local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
             if not (ok and FileManager.instance and not FileManager.instance.tearing_down) then
@@ -400,6 +400,7 @@ function M.openEditDialog(shortcut, menu, on_close, view)
             local saved_state = snapshotMenuState(real_menu)
             Picker.startPicking(real_menu, sc.key,
                 function(path_record)
+                    path_record.view = "fb"
                     applyMenuAction(path_record)
                     finishPicking(real_menu, saved_state, reopenCurrentDialog)
                 end,
@@ -450,7 +451,6 @@ function M.openEditDialog(shortcut, menu, on_close, view)
         choice_dialog = ButtonDialog:new{
             title = _("Choose action source"),
             buttons = {
-                
                 {{
                     text = _("System action"),
                     callback = function()

@@ -31,8 +31,6 @@ local Blitbuffer     = require("ffi/blitbuffer")
 local M = {}
 
 -- Module-level state.
-local _bar_widget   = nil  -- the widget inserted into content_group
-local _bar_h        = 0    -- its height
 local _saved_inner_h = nil -- original inner_dimen.h before shrinking
 
 -- ==========================================================================
@@ -41,7 +39,7 @@ local _saved_inner_h = nil -- original inner_dimen.h before shrinking
 
 --- Build bar content by reusing createHomeContent with a minimal fake menu.
 local function buildBarContent(fc, fb_config)
-    local createHomeContent = require("home_content")
+    local HomeContent = require("home_content")
     local width = fc.inner_dimen and fc.inner_dimen.w or fc.dimen and fc.dimen.w or Screen:getWidth()
     local fake_menu = {
         width            = width,
@@ -57,7 +55,7 @@ local function buildBarContent(fc, fb_config)
     local on_refresh = function()
         M.inject(fb_config)
     end
-    local ok, content = pcall(createHomeContent, fake_menu, fb_config, on_refresh)
+    local ok, content = pcall(HomeContent.createHomeContent, fake_menu, fb_config, on_refresh)
     return ok and content or nil
 end
 
@@ -131,9 +129,6 @@ function M.inject(fb_config)
     local cg = fc.content_group
     table.insert(cg, 2, frame)
 
-    _bar_widget = frame
-    _bar_h      = bar_h
-
     fc:_recalculateDimen()
     fc:updateItems()
     UIManager:setDirty(fc, "ui")
@@ -146,8 +141,6 @@ function M.remove()
         removeFromContentGroup(fc)
         restoreLayout(fc)
     end
-    _bar_widget    = nil
-    _bar_h         = 0
     _saved_inner_h = nil
 end
 

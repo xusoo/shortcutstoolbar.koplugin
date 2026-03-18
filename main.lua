@@ -15,16 +15,6 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 -- ==========================================================================
--- Configuration
--- ==========================================================================
-
--- Single source of truth for all available shortcuts (key, label, icon, default).
-local SHORTCUT_ITEMS = require("shortcuts_data")
--- Horizontal padding (px, before scaling) between icon buttons.
--- Read from shortcuts_data so this and shortcuts_config.lua never drift apart.
-local ITEM_SPACING = SHORTCUT_ITEMS.ITEM_SPACING
-
--- ==========================================================================
 -- Helpers
 -- ==========================================================================
 
@@ -33,10 +23,11 @@ local UIManager       = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ConfirmBox      = require("ui/widget/confirmbox")
 local InfoMessage     = require("ui/widget/infomessage")
-local SpinWidget      = require("ui/widget/spinwidget")
 local Manager         = require("custom_shortcut_manager")
+local ToolbarSettings = require("toolbar_settings")
+local SimpleUIIntegration = require("simpleui_integration")
 
-local createHomeContent = require("home_content")
+local HomeContent = require("home_content")
 
 -- ==========================================================================
 -- Settings
@@ -46,95 +37,6 @@ local createHomeContent = require("home_content")
 -- callbacks so all closures always see current values).
 local reader_config = {}
 local fb_config     = {}
-
---- Read and build a config table for the given view ("reader" or "fb").
--- Settings are stored as a single serialised table per view:
---   shortcutstoolbar_reader  /  shortcutstoolbar_fb
-local function readConfig(view)
-    local stored = G_reader_settings:readSetting("shortcutstoolbar_" .. view) or {}
-    local result  = { view = view, spacing = ITEM_SPACING }
-
-    if view == "reader" then
-        result.enabled               = stored.enabled ~= false
-        result.show_book_info        = stored.show_book_info ~= false
-        result.show_time_and_battery = stored.show_time_and_battery ~= false
-        result.show_back_button      = stored.show_back_button ~= false
-        result.icon_size             = stored.icon_size or 26
-    else  -- "fb"
-        result.enabled               = stored.enabled ~= false
-        result.icon_size             = stored.icon_size or 26
-        result.placement             = stored.placement or "persistent"
-    end
-
-    -- Build active items list respecting per-view defaults and saved ordering.
-    local order_pos = {}
-    if stored.item_order then
-        local pos = 1
-        for key in stored.item_order:gmatch("([^,]+)") do
-            order_pos[key] = pos
-            pos = pos + 1
-        end
-    end
-
-    -- defaults_pos drives both first-run enabled state and initial display order.
-    local defaults_list = (view == "reader") and SHORTCUT_ITEMS.reader_defaults or SHORTCUT_ITEMS.fb_defaults
-    local defaults_pos = {}
-    for pos, key in ipairs(defaults_list) do
-        defaults_pos[key] = pos
-    end
-
-    local all_items = {}
-    for i, item in ipairs(SHORTCUT_ITEMS) do
-        if not ((view == "fb" and item.reader_only) or (view == "reader" and item.fb_only)) then
-            table.insert(all_items, { item = item, idx = i })
-        end
-    end
-    local custom_items = Manager.getShortcutDataItems(view)
-    for i, item in ipairs(custom_items) do
-        if not ((view == "fb" and item.reader_only) or (view == "reader" and item.fb_only)) then
-            table.insert(all_items, { item = item, idx = #SHORTCUT_ITEMS + i })
-        end
-    end
-
-    local sorted = {}
-    for _, entry in ipairs(all_items) do
-        local item = entry.item
-        table.insert(sorted, { item = item, sort_key = order_pos[item.key] or defaults_pos[item.key] or (1000 + entry.idx) })
-    end
-    table.sort(sorted, function(a, b) return a.sort_key < b.sort_key end)
-
-    local active = {}
-    for _, entry in ipairs(sorted) do
-        local item     = entry.item
-        local item_cfg = stored.items and stored.items[item.key]
-        local item_enabled
-        if item_cfg ~= nil then
-            item_enabled = item_cfg
-        else
-            item_enabled = defaults_pos[item.key] ~= nil
-        end
-        if item_enabled then table.insert(active, item.key) end
-    end
-    result.items = table.concat(active, ",")
-    return result
-end
-
---- Persist the mutable display-option fields of a config table back to the
--- per-view store.  Per-item visibility (items / item_order) is written only
--- by openShortcutsConfig.
-local function saveConfig(view, cfg)
-    local stored = G_reader_settings:readSetting("shortcutstoolbar_" .. view) or {}
-    stored.enabled               = cfg.enabled
-    stored.show_book_info        = cfg.show_book_info
-    stored.show_time_and_battery = cfg.show_time_and_battery
-    stored.icon_size             = cfg.icon_size
-    if view == "reader" then
-        stored.show_back_button = cfg.show_back_button
-    else
-        stored.placement = cfg.placement
-    end
-    G_reader_settings:saveSetting("shortcutstoolbar_" .. view, stored)
-end
 
 local function syncFileBrowserPersistentBar()
     local PersistentBar = require("fb_persistent_bar")
@@ -149,10 +51,8 @@ end
 -- Call this after any change that may affect item lists (e.g. custom-shortcut
 -- add/delete) so all closures remain in sync.
 local function refreshAllConfigs()
-    local r = readConfig("reader")
-    for k, v in pairs(r) do reader_config[k] = v end
-    local f = readConfig("fb")
-    for k, v in pairs(f) do fb_config[k] = v end
+    ToolbarSettings.refreshInto(reader_config, "reader")
+    ToolbarSettings.refreshInto(fb_config, "fb")
     syncFileBrowserPersistentBar()
 end
 
@@ -238,7 +138,7 @@ local function resetToHomeState(menu, cfg)
     end
 
     -- Inject the home content panel
-    local ok, home = pcall(createHomeContent, menu, cfg, resetToHomeState)
+    local ok, home = pcall(HomeContent.createHomeContent, menu, cfg, resetToHomeState)
     if ok and home and menu.item_group then
         table.insert(menu.item_group, 2, home)
         menu.item_group:resetLayout()
@@ -254,55 +154,6 @@ end
 -- ==========================================================================
 -- Shortcuts config helper
 -- ==========================================================================
-
---- Opens the shortcuts-configuration dialog for the given view ("reader"|"fb"),
--- pre-populating it from the current config and wiring up on_save to persist.
--- Extracted here so it can be called from addToMainMenu and any user patch.
-local function openShortcutsConfig(view)
-    local cfg = view == "reader" and reader_config or fb_config
-    local ShortcutsConfigDialog = require("shortcuts_config")
-    local enabled_keys, in_enabled, disabled_keys = {}, {}, {}
-    for key in (cfg.items or ""):gmatch("([^,]+)") do
-        table.insert(enabled_keys, key)
-        in_enabled[key] = true
-    end
-    -- Build the full item list for this view (honouring reader_only / fb_only filters).
-    local all_items = {}
-    for _, item in ipairs(SHORTCUT_ITEMS) do
-        if not ((view == "fb" and item.reader_only) or (view == "reader" and item.fb_only)) then
-            table.insert(all_items, item)
-        end
-    end
-    for _, item in ipairs(Manager.getShortcutDataItems(view)) do
-        if not ((view == "fb" and item.reader_only) or (view == "reader" and item.fb_only)) then
-            table.insert(all_items, item)
-        end
-    end
-    for _, item in ipairs(all_items) do
-        if not in_enabled[item.key] then
-            table.insert(disabled_keys, item.key)
-        end
-    end
-    UIManager:show(ShortcutsConfigDialog:new{
-        enabled_keys  = enabled_keys,
-        disabled_keys = disabled_keys,
-        view          = view,
-        on_save       = function(new_enabled, new_disabled)
-            -- Write per-item map and order CSV into the per-view table.
-            local stored    = G_reader_settings:readSetting("shortcutstoolbar_" .. view) or {}
-            local items_map = stored.items or {}
-            for _, item in ipairs(all_items) do items_map[item.key] = false end
-            for _, k in ipairs(new_enabled) do items_map[k] = true end
-            stored.items = items_map
-            local full_order = {}
-            for _, k in ipairs(new_enabled)  do table.insert(full_order, k) end
-            for _, k in ipairs(new_disabled) do table.insert(full_order, k) end
-            stored.item_order = table.concat(full_order, ",")
-            G_reader_settings:saveSetting("shortcutstoolbar_" .. view, stored)
-            refreshAllConfigs()
-        end,
-    })
-end
 
 -- ==========================================================================
 -- Plugin
@@ -321,11 +172,13 @@ function ReaderToolbar:init()
     -- Ensure configs are populated before any logic that reads them.
     -- This may be the first init (populate) or a subsequent one (already set).
     if not reader_config.view then
-        local r = readConfig("reader")
-        for k, v in pairs(r) do reader_config[k] = v end
-        local f = readConfig("fb")
-        for k, v in pairs(f) do fb_config[k] = v end
+        ToolbarSettings.refreshInto(reader_config, "reader")
+        ToolbarSettings.refreshInto(fb_config, "fb")
     end
+
+    -- Set up SimpleUI integration (if available) so that the shortcuts bar 
+    -- can also be added as a module on the homescreen.
+    SimpleUIIntegration.install()
 
     -- Re-inject the persistent bar every time a FileManager is initialized.
     -- NOTE: FileManager.instance is assigned *after* plugins are loaded, so we
@@ -405,7 +258,7 @@ function ReaderToolbar:onMenuUpdateItems(menu)
     for _, widget in ipairs(menu.item_group) do
         if widget and widget.is_shortcuts_bar then return end
     end
-    local ok, home = pcall(createHomeContent, menu, cfg, resetToHomeState)
+    local ok, home = pcall(HomeContent.createHomeContent, menu, cfg, resetToHomeState)
     if ok and home and #menu.item_group >= 1 then
         table.insert(menu.item_group, 2, home)
         menu.item_group:resetLayout()
@@ -427,7 +280,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 checked_func = function() return reader_config.enabled end,
                 callback     = function()
                     reader_config.enabled = not reader_config.enabled
-                    saveConfig("reader", reader_config)
+                    ToolbarSettings.saveConfig("reader", reader_config)
                 end,
             },
             {
@@ -435,7 +288,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                 checked_func = function() return fb_config.enabled end,
                 callback     = function()
                     fb_config.enabled = not fb_config.enabled
-                    saveConfig("fb", fb_config)
+                    ToolbarSettings.saveConfig("fb", fb_config)
                     local PersistentBar = require("fb_persistent_bar")
                     if fb_config.enabled and fb_config.placement == "persistent" then
                         PersistentBar.inject(fb_config)
@@ -455,7 +308,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         checked_func = function() return reader_config.show_book_info end,
                         callback     = function()
                             reader_config.show_book_info = not reader_config.show_book_info
-                            saveConfig("reader", reader_config)
+                            ToolbarSettings.saveConfig("reader", reader_config)
                         end,
                     },
                     {
@@ -463,7 +316,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         checked_func = function() return reader_config.show_time_and_battery end,
                         callback     = function()
                             reader_config.show_time_and_battery = not reader_config.show_time_and_battery
-                            saveConfig("reader", reader_config)
+                            ToolbarSettings.saveConfig("reader", reader_config)
                         end,
                     },
                     {
@@ -471,7 +324,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         checked_func = function() return reader_config.show_back_button end,
                         callback     = function()
                             reader_config.show_back_button = not reader_config.show_back_button
-                            saveConfig("reader", reader_config)
+                            ToolbarSettings.saveConfig("reader", reader_config)
                         end,
                     },
                     {
@@ -480,7 +333,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         end,
                         keep_menu_open = true,
                         callback       = function(touchmenu_instance)
-                            UIManager:show(SpinWidget:new{
+                            UIManager:show(require("ui/widget/spinwidget"):new{
                                 title_text    = _("Icon size"),
                                 value         = reader_config.icon_size,
                                 value_min     = 14,
@@ -489,7 +342,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 default_value = 26,
                                 callback      = function(spin)
                                     reader_config.icon_size = spin.value
-                                    saveConfig("reader", reader_config)
+                                    ToolbarSettings.saveConfig("reader", reader_config)
                                     if touchmenu_instance then touchmenu_instance:updateItems() end
                                 end,
                             })
@@ -497,7 +350,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                     },
                     {
                         text     = _("Configure shortcuts"),
-                        callback = function() openShortcutsConfig("reader") end,
+                        callback = function() ToolbarSettings.openShortcutsConfig("reader", refreshAllConfigs) end,
                     },
                     {
                         text                = _("Custom shortcuts"),
@@ -527,7 +380,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         end,
                         keep_menu_open = true,
                         callback       = function(touchmenu_instance)
-                            UIManager:show(SpinWidget:new{
+                            UIManager:show(require("ui/widget/spinwidget"):new{
                                 title_text    = _("Icon size"),
                                 value         = fb_config.icon_size,
                                 value_min     = 14,
@@ -536,7 +389,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 default_value = 26,
                                 callback      = function(spin)
                                     fb_config.icon_size = spin.value
-                                    saveConfig("fb", fb_config)
+                                    ToolbarSettings.saveConfig("fb", fb_config)
                                     if fb_config.placement == "persistent" then
                                         require("fb_persistent_bar").inject(fb_config)
                                     end
@@ -560,7 +413,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 callback     = function()
                                     require("fb_persistent_bar").remove()
                                     fb_config.placement = "menu"
-                                    saveConfig("fb", fb_config)
+                                    ToolbarSettings.saveConfig("fb", fb_config)
                                 end,
                             },
                             {
@@ -570,7 +423,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                                 end,
                                 callback     = function()
                                     fb_config.placement = "persistent"
-                                    saveConfig("fb", fb_config)
+                                    ToolbarSettings.saveConfig("fb", fb_config)
                                     require("fb_persistent_bar").inject(fb_config)
                                 end,
                             },
@@ -578,7 +431,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                     },
                     {
                         text      = _("Configure shortcuts"),
-                        callback  = function() openShortcutsConfig("fb") end,
+                        callback  = function() ToolbarSettings.openShortcutsConfig("fb", refreshAllConfigs) end,
                     },
                     {
                         text                = _("Custom shortcuts"),

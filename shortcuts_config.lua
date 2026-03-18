@@ -80,15 +80,17 @@ end
 local ShortcutsConfigDialog = InputContainer:extend{
     enabled_keys  = nil,   -- ordered list of active shortcut keys
     disabled_keys = nil,   -- list of inactive shortcut keys
+    view          = nil,   -- "reader" or "fb" – used to load custom shortcuts
     on_save       = nil,   -- function(enabled_keys, disabled_keys)
     _sel          = nil,   -- { bar = "enabled"|"disabled", idx = N } or nil
     _movable      = nil,
+    _item_lookup  = nil,   -- merged ITEM_BY_KEY + custom shortcuts for this view
 }
 
 function ShortcutsConfigDialog:_buildCell(bar, idx, override_w)
     local keys = (bar == "enabled") and self.enabled_keys or self.disabled_keys
     local key  = keys[idx]
-    local info = ITEM_BY_KEY[key] or { label = key, icon = nil }
+    local info = (self._item_lookup or ITEM_BY_KEY)[key] or { label = key, icon = nil }
     local sel  = self._sel and self._sel.bar == bar and self._sel.idx == idx
     local border_thick = Screen:scaleBySize(sel and 1 or 0)
 
@@ -251,13 +253,16 @@ function ShortcutsConfigDialog:_buildBar(bar, bar_width)
 end
 
 function ShortcutsConfigDialog:init()
-    -- Augment the static ITEM_BY_KEY with any custom shortcuts defined by the
-    -- user so that their labels and icons are resolved correctly in the dialog.
+    -- Build a per-instance item lookup merging static shortcuts with custom
+    -- shortcuts for the relevant view ("reader" or "fb").
     local ok, Manager = pcall(require, "custom_shortcut_manager")
     if ok then
-        for _i, item in ipairs(Manager.getShortcutDataItems()) do
-            ITEM_BY_KEY[item.key] = item
+        self._item_lookup = setmetatable({}, { __index = ITEM_BY_KEY })
+        for _i, item in ipairs(Manager.getShortcutDataItems(self.view)) do
+            self._item_lookup[item.key] = item
         end
+    else
+        self._item_lookup = ITEM_BY_KEY
     end
 
     self.dimen = Screen:getSize()
@@ -276,7 +281,7 @@ function ShortcutsConfigDialog:init()
         local key = (self._sel.bar == "enabled")
             and self.enabled_keys[self._sel.idx]
             or  self.disabled_keys[self._sel.idx]
-        sel_label = (ITEM_BY_KEY[key] or { label = key }).label
+        sel_label = (self._item_lookup[key] or { label = key }).label
     else
         sel_label   = _("Tap an icon to select it")
         sel_is_hint = true

@@ -33,6 +33,7 @@ local ITEM_BY_KEY = {}
 for _, item in ipairs(SHORTCUT_DATA) do ITEM_BY_KEY[item.key] = item end
 
 local Button          = require("ui/widget/button")
+local ConfirmBox      = require("ui/widget/confirmbox")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
 local IconButton      = require("ui/widget/iconbutton")
@@ -170,7 +171,7 @@ local createHomeContent
 --- Build the table of shortcut callbacks for the given menu.
 -- icon, icon_file, and label come from shortcuts_data (ITEM_BY_KEY);
 -- only behaviour that depends on the live menu instance lives here.
-local function buildShortcutDefs(menu, on_refresh)
+local function buildShortcutDefs(menu, config, on_refresh)
     local defs = {
         font = {
             callback = function()
@@ -250,12 +251,57 @@ local function buildShortcutDefs(menu, on_refresh)
                 UIManager:broadcastEvent(Event:new("ToggleNightMode"))
             end,
         },
+        cloud_storage = {
+            callback = function()
+                local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+                if ok and FileManager.instance and not FileManager.instance.tearing_down
+                        and FileManager.instance.menu then
+                    FileManager.instance.menu:onShowCloudStorage()
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Cloud storage is only available in the file browser."),
+                        timeout = 2,
+                    })
+                end
+            end,
+        },
+        calendar_stats = {
+            callback = function()
+                UIManager:broadcastEvent(Event:new("ShowCalendarView"))
+            end,
+        },
+        favorites = {
+            callback = function()
+                local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+                if ok and FileManager.instance and not FileManager.instance.tearing_down
+                        and FileManager.instance.collections then
+                    FileManager.instance.collections:onShowColl()
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("Favorites are only available in the file browser."),
+                        timeout = 2,
+                    })
+                end
+            end,
+        },
+        restart = {
+            callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text        = _("Restart KOReader?"),
+                    ok_text     = _("Restart"),
+                    ok_callback = function()
+                        UIManager:restartKOReader()
+                    end,
+                })
+            end,
+        },
     }
 
     -- Custom shortcuts (dynamic, from Manager) --------------------------------
     -- Tap: replay if assigned, else open edit dialog.
     -- Long-press: always open edit dialog (for reassign/rename).
-    for _i, sc in ipairs(Manager.loadAll()) do
+    local view = config and config.view or "reader"
+    for _i, sc in ipairs(Manager.loadAll(view)) do
         local key = sc.key  -- capture
         defs[key] = {
             callback = function()
@@ -269,10 +315,10 @@ local function buildShortcutDefs(menu, on_refresh)
                 end
             end,
             hold_callback = function()
-                Manager.openEditDialog(Manager.find(key) or sc, menu, on_refresh)
+                Manager.openEditDialog(Manager.find(key, view) or sc, menu, on_refresh, view)
             end,
             get_label = function()
-                local s = Manager.find(key) or sc
+                local s = Manager.find(key, view) or sc
                 return s.path_record and s.path_record.display_label or _("Not assigned")
             end,
         }
@@ -296,14 +342,14 @@ local function createShortcutsBar(menu, config, reset_fn, reserved_left)
         if reset_fn then reset_fn(menu, config) end
     end
 
-    local shortcut_defs = buildShortcutDefs(menu, on_refresh)
+    local shortcut_defs = buildShortcutDefs(menu, config, on_refresh)
     local h_margin      = Size.padding.fullscreen
     local avail_w       = menu.width - 2 * h_margin - (reserved_left or 0)
 
     -- Augment the static ITEM_BY_KEY with live custom shortcuts so that icon,
     -- icon_file, and label are resolved correctly for custom keys.
     local item_lookup = ITEM_BY_KEY
-    local custom_items = Manager.getShortcutDataItems()
+    local custom_items = Manager.getShortcutDataItems(config and config.view or "reader")
     if #custom_items > 0 then
         item_lookup = setmetatable({}, { __index = ITEM_BY_KEY })
         for _i, ci in ipairs(custom_items) do
@@ -425,7 +471,7 @@ createHomeContent = function(menu, config, reset_fn)
 
     local book_panel
     if config.show_book_info then
-        local ok, panel = pcall(createBookInfoPanel, math.floor(total_w * 0.7))
+        local ok, panel = pcall(createBookInfoPanel, math.floor(total_w * 0.7), config.view)
         if ok then book_panel = panel end
     end
 
@@ -463,7 +509,7 @@ createHomeContent = function(menu, config, reset_fn)
     -- ---- Bottom row: back button (left) + shortcuts icons (right) ----
     -- Build the back button first so we can reserve its width from the shortcuts avail_w.
     local back_btn
-    if config.show_back_button ~= false then
+    if config.view ~= "fb" and config.show_back_button ~= false then
         local chevron_size  = Screen:scaleBySize(14)
         local back_callback = function()
             if menu.close_callback then menu.close_callback() end

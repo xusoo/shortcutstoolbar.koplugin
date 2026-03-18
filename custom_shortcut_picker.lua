@@ -23,41 +23,56 @@ Public API
 
 path_record format
 ------------------
+Leaf-item shortcut (executes a specific menu action):
   {
     tab_index     = 2,           -- 1-based tab index
     display_label = "Font",      -- human-readable label for the shortcut button
     nav_path      = {            -- intermediate sub-menus to enter (may be empty)
       { id = "change_font", index = 3, text = "Font" },
     },
+    view          = "reader",    -- "reader" or "fb"
     item = {
       id    = "font_size",        -- item.menu_item_id (nil when not set)
       index = 5,                  -- positional index (language-independent)
       text  = "Font size",        -- display text (last-resort fallback)
     },
   }
+
+Menu shortcut (opens a menu or sub-menu and leaves it open):
+  {
+    tab_index     = 2,
+    display_label = "Font settings",
+    nav_path      = { ... },     -- sub-menus to enter; empty = open at tab root
+    view          = "reader",
+    is_menu       = true,        -- no 'item' field
+  }
 --]]
 
-local Blitbuffer  = require("ffi/blitbuffer")
-local Button      = require("ui/widget/button")
-local InfoMessage = require("ui/widget/infomessage")
-local Size        = require("ui/size")
-local TouchMenu   = require("ui/widget/touchmenu")
-local UIManager   = require("ui/uimanager")
-local _           = require("gettext")
+local Blitbuffer   = require("ffi/blitbuffer")
+local Button       = require("ui/widget/button")
+local InfoMessage  = require("ui/widget/infomessage")
+local Size         = require("ui/size")
+local TouchMenu    = require("ui/widget/touchmenu")
+local UIManager    = require("ui/uimanager")
+local VerticalSpan = require("ui/widget/verticalspan")
+local _            = require("gettext")
 
 -- ==========================================================================
 -- Module-level picking state
 -- ==========================================================================
 
 local _state = {
-    active     = false,
-    menu       = nil,
-    slot_key   = nil,
-    tab_index  = nil,
-    nav_path   = nil,   -- list of { id=..., text=... }
-    on_done    = nil,
-    on_cancel  = nil,
-    cancel_bar = nil,   -- Button widget appended to item_group while picking
+    active          = false,
+    menu            = nil,
+    slot_key        = nil,
+    tab_index       = nil,
+    nav_path        = nil,   -- list of { id=..., text=... }
+    view            = nil,   -- "reader" or "fb"
+    on_done         = nil,
+    on_cancel       = nil,
+    cancel_bar      = nil,   -- Button appended to item_group (cancel picking)
+    select_menu_bar = nil,   -- Button appended above cancel_bar (select current menu)
+    bars_span       = nil,   -- VerticalSpan between the two bars
 }
 
 -- Patching helpers (forward-declared; defined after _installPatches below)
@@ -91,14 +106,104 @@ local function itemText(item)
     return type(t) == "string" and t or ""
 end
 
+-- Replay temporarily mutates TouchMenu navigation state; snapshot it so we can
+-- restore a consistent menu before closing or after partial navigation failures.
+local function snapshotMenuState(menu)
+    local item_table_stack = {}
+    for i, item_table in ipairs(menu.item_table_stack or {}) do
+        item_table_stack[i] = item_table
+    end
+    return {
+        cur_tab = menu.cur_tab,
+        item_table = menu.item_table,
+        item_table_stack = item_table_stack,
+        page = menu.page,
+    }
+end
+
+local function restoreMenuState(menu, state)
+    if not menu or not state then return end
+
+    menu.cur_tab = state.cur_tab
+    menu.item_table = state.item_table
+    menu.item_table_stack = {}
+    for i, item_table in ipairs(state.item_table_stack or {}) do
+        menu.item_table_stack[i] = item_table
+    end
+    menu.parent_id = nil
+    menu.page = state.page or 1
+    menu:updateItems(menu.page)
+end
+
+--- Derive a human-readable label for the currently displayed menu level.
+-- At a sub-menu level: use the last nav_path entry's text.
+-- At a tab root: derive from the tab's icon name or fall back to "Menu".
+local function getMenuLabel(menu)
+    if _state.nav_path and #_state.nav_path > 0 then
+        return _state.nav_path[#_state.nav_path].text
+    end
+    -- Tab root: try to get a name from the tab icon.
+    local tab_index = _state.tab_index or 1
+    local tab = menu.tab_item_table and menu.tab_item_table[tab_index]
+    if tab then
+        local icon = tab.icon or ""
+        -- Strip common "appbar." prefix, convert dots/underscores to spaces,
+        -- then capitalize the first letter.
+        local name = icon:gsub("^appbar%.", ""):gsub("[%._]+", " ")
+        if name ~= "" then
+            return name:sub(1, 1):upper() .. name:sub(2)
+        end
+    end
+    return _("Menu")
+end
+
 -- ==========================================================================
--- Cancel bar
+-- Picking-mode bars
 -- ==========================================================================
+
+--- Build the "select this menu" outline Button (shown above the cancel bar).
+local function _makeSelectMenuBar(menu)
+    local bar = Button:new{
+        text           = _("Tap here to use this menu as the action"),
+        width          = menu.item_width,
+        text_font_bold = false,
+        bordersize     = Size.border.thick,
+        show_parent    = menu.show_parent,
+        callback       = function()
+            if not _state.active then return end
+            -- Snapshot nav_path at the moment of the tap.
+            local nav_copy = {}
+            for i, step in ipairs(_state.nav_path or {}) do
+                nav_copy[i] = { id = step.id, index = step.index, text = step.text }
+            end
+            local label = getMenuLabel(menu)
+            local path_record = {
+                tab_index     = _state.tab_index,
+                display_label = label,
+                nav_path      = nav_copy,
+                view          = _state.view,
+                is_menu       = true,
+            }
+            local cb = _state.on_done
+            _stopPicking()
+            if cb then cb(path_record) end
+        end,
+    }
+    -- Button:init() only applies rounded corners and colored border when a
+    -- background is set (and then it matches background, hiding the border).
+    -- Override the FrameContainer directly to get a gray border + same radius
+    -- as the cancel bar without changing the white fill.
+    if bar.frame then
+        bar.frame.color  = Blitbuffer.COLOR_LIGHT_GRAY
+        bar.frame.radius = Size.radius.button
+    end
+    return bar
+end
 
 --- Build the cancel bar Button widget (created once per picking session).
 local function _makeCancelBar(menu)
     return Button:new{
-        text           = _("Tap here to exit action selection mode"),
+        text           = _("Tap here to cancel"),
         width          = menu.item_width,
         text_font_bold = true,
         bordersize     = Size.border.thin,
@@ -128,17 +233,26 @@ local function _installPatches()
     _orig_closeMenu       = TouchMenu.closeMenu
     _orig_updateItems     = TouchMenu.updateItems
 
-    -- Append the cancel bar to item_group after every updateItems call.
+    -- Append the select-menu and cancel bars to item_group after every updateItems call.
     TouchMenu.updateItems = function(self, ...)
         local result = _orig_updateItems(self, ...)
         if _state.active and self == _state.menu then
+            if not _state.select_menu_bar then
+                _state.select_menu_bar = _makeSelectMenuBar(self)
+            end
             if not _state.cancel_bar then
                 _state.cancel_bar = _makeCancelBar(self)
             end
+            -- Insert outline "select" bar above the gray cancel bar.
+            table.insert(self.item_group, _state.select_menu_bar)
+            if not _state.bars_span then
+                _state.bars_span = VerticalSpan:new{ width = Size.padding.default }
+            end
+            table.insert(self.item_group, _state.bars_span)
             table.insert(self.item_group, _state.cancel_bar)
-            -- Reset cached layout so _offsets is recomputed including the cancel bar.
+            -- Reset cached layout so _offsets is recomputed including both bars.
             self.item_group:resetLayout()
-            -- Recalculate menu height to include the cancel bar.
+            -- Recalculate menu height to include both bars.
             self.dimen.h = self.item_group:getSize().h + self.bordersize * 2 + self.padding
             UIManager:setDirty(self.show_parent, function()
                 return "ui", self.dimen
@@ -191,6 +305,7 @@ local function _installPatches()
             tab_index     = _state.tab_index,
             display_label = label,
             nav_path      = _state.nav_path,   -- already a copy we own
+            view          = _state.view,        -- "reader" or "fb"
             item          = {
                 id    = item.menu_item_id,
                 index = item_index,
@@ -235,25 +350,29 @@ local function _installPatches()
 end
 
 _stopPicking = function()
-    local menu       = _state.menu
-    local cancel_bar = _state.cancel_bar
+    local menu            = _state.menu
+    local cancel_bar      = _state.cancel_bar
+    local select_menu_bar = _state.select_menu_bar
+    local bars_span       = _state.bars_span
 
-    _state.cancel_bar = nil
-    _state.active     = false
-    _state.menu       = nil
-    _state.slot_key   = nil
-    _state.tab_index  = nil
-    _state.nav_path   = nil
-    _state.on_done    = nil
-    _state.on_cancel  = nil
+    _state.cancel_bar      = nil
+    _state.select_menu_bar = nil
+    _state.bars_span       = nil
+    _state.active          = false
+    _state.menu            = nil
+    _state.slot_key        = nil
+    _state.tab_index       = nil
+    _state.nav_path        = nil
+    _state.view            = nil
+    _state.on_done         = nil
+    _state.on_cancel       = nil
 
-    -- Remove the cancel bar from item_group and shrink the menu frame back.
-    if menu and cancel_bar then
+    -- Remove both bars from item_group and shrink the menu frame back.
+    if menu and (cancel_bar or select_menu_bar) then
         local ig = menu.item_group
         for i = #ig, 1, -1 do
-            if ig[i] == cancel_bar then
+            if ig[i] == cancel_bar or ig[i] == select_menu_bar or ig[i] == bars_span then
                 table.remove(ig, i)
-                break
             end
         end
         ig:resetLayout()
@@ -291,7 +410,8 @@ local M = {}
 -- @param slot_key  e.g. "custom_1"
 -- @param on_done   function(path_record) – called when user taps a leaf item.
 -- @param on_cancel function() – called when user backs out to root.
-function M.startPicking(menu, slot_key, on_done, on_cancel)
+-- @param view      "reader" or "fb" (default "reader") – stored in path_record.
+function M.startPicking(menu, slot_key, on_done, on_cancel, view)
     if _state.active then _stopPicking() end
 
     _state.active    = true
@@ -299,6 +419,7 @@ function M.startPicking(menu, slot_key, on_done, on_cancel)
     _state.slot_key  = slot_key
     _state.tab_index = 1  -- we switch to tab 1 below
     _state.nav_path  = {}
+    _state.view      = view or "reader"
     _state.on_done   = on_done
     _state.on_cancel = on_cancel
 
@@ -396,6 +517,69 @@ end
 function M.replayShortcut(menu, path_record)
     if not path_record then return false end
 
+    local view = path_record.view
+
+    -- Explicit view routing -----------------------------------------------
+    if view == "reader" then
+        -- Must have an active ReaderUI.
+        local ok, ReaderUI = pcall(require, "apps/reader/readerui")
+        if not (ok and ReaderUI.instance and not ReaderUI.instance.tearing_down) then
+            UIManager:show(InfoMessage:new{
+                text    = _("This shortcut only works while reading a book."),
+                timeout = 3,
+            })
+            return false
+        end
+        -- menu should already be the live reader TouchMenu passed in by
+        -- home_content; use it directly (it has a real tab_item_table).
+
+    elseif view == "fb" then
+        -- Resolve to the live FM TouchMenu.
+        local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+        if not (ok and FileManager.instance and not FileManager.instance.tearing_down) then
+            UIManager:show(InfoMessage:new{
+                text    = _("This shortcut only works in the file browser."),
+                timeout = 3,
+            })
+            return false
+        end
+        FileManager.instance.menu:onShowMenu(path_record.tab_index)
+        local mc = FileManager.instance.menu.menu_container
+        if mc and mc[1] then
+            menu = mc[1]
+        end
+        if not menu.tab_item_table or #menu.tab_item_table == 0 then
+            UIManager:show(InfoMessage:new{
+                text    = _("Could not open menu to run shortcut."),
+                timeout = 3,
+            })
+            return false
+        end
+
+    else
+        -- Legacy fallback: detect by stub (old saved shortcuts without view field).
+        if not menu.tab_item_table or #menu.tab_item_table == 0 then
+            local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+            if ok and FileManager.instance and not FileManager.instance.tearing_down then
+                FileManager.instance.menu:onShowMenu(path_record.tab_index)
+                local mc = FileManager.instance.menu.menu_container
+                if mc and mc[1] then
+                    menu = mc[1]
+                end
+            end
+            if not menu.tab_item_table or #menu.tab_item_table == 0 then
+                UIManager:show(InfoMessage:new{
+                    text    = _("Could not open menu to run shortcut."),
+                    timeout = 3,
+                })
+                return false
+            end
+        end
+    end
+    -------------------------------------------------------------------------
+
+    local saved_state = snapshotMenuState(menu)
+
     -- 1. Switch to the recorded tab
     if path_record.tab_index then
         -- Use the raw original if available; otherwise fall through to patched
@@ -406,6 +590,9 @@ function M.replayShortcut(menu, path_record)
     -- 2. Navigate through sub-menus
     for _i, step in ipairs(path_record.nav_path or {}) do
         if not enterSubMenu(menu, step) then
+            if isMenuVisible(menu) then
+                restoreMenuState(menu, saved_state)
+            end
             UIManager:show(InfoMessage:new{
                 text    = _("Could not navigate to shortcut — menu layout may have changed."),
                 timeout = 3,
@@ -414,12 +601,20 @@ function M.replayShortcut(menu, path_record)
         end
     end
 
+    -- 2b. Menu shortcut: menu is now open at the right level – nothing more to do.
+    if path_record.is_menu then
+        return true
+    end
+
     -- 3. Find and execute the leaf item
     local leaf = findItem(menu,
         path_record.item and path_record.item.id,
         path_record.item and path_record.item.index,
         path_record.item and path_record.item.text)
     if not leaf then
+        if isMenuVisible(menu) then
+            restoreMenuState(menu, saved_state)
+        end
         UIManager:show(InfoMessage:new{
             text    = _("Could not find shortcut item — menu layout may have changed."),
             timeout = 3,
@@ -431,13 +626,12 @@ function M.replayShortcut(menu, path_record)
     if callback then
         callback(menu)
     end
-    -- Collapse back to the toolbar home state (same as tapping the active tab).
-    -- The ReaderToolbar patch intercepts switchMenuTab when cur_tab == tab_num
-    -- and calls resetToHomeState instead of closing the menu entirely.
-    if menu.cur_tab then
-        menu:switchMenuTab(menu.cur_tab)
-    else
-        menu:closeMenu()
+    -- Close from a consistent top-level state; some callbacks may already close it.
+    if isMenuVisible(menu) then
+        restoreMenuState(menu, saved_state)
+        if isMenuVisible(menu) then
+            menu:closeMenu()
+        end
     end
     return true
 end

@@ -37,6 +37,7 @@ local items = {
     { key = "time",         label = _("Time"),                                   icon = nil },
     { key = "battery",      label = _("Battery"),                                icon = nil },
     { key = "cloud_storage",  label = _("Cloud storage"),  fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/cloud.svg" },
+    { key = "opds",           label = _("OPDS catalog"),   fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/global.svg" },
     { key = "calendar_stats", label = _("Calendar statistics"),                  icon_file = PLUGIN_DIR .. "/icons/calendar.svg" },
     { key = "favorites",      label = _("Favorites"),      fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/heart.svg" },
     { key = "collections",    label = _("Collections"),    fb_only = true,       icon_file = PLUGIN_DIR .. "/icons/folder.svg" },

@@ -15,6 +15,7 @@ local Device   = require("device")
 local Event    = require("ui/event")
 local Font     = require("ui/font")
 local Geom     = require("ui/geometry")
+local PluginLoader = require("pluginloader")
 local Size     = require("ui/size")
 local UIManager = require("ui/uimanager")
 local Screen   = Device.screen
@@ -262,6 +263,20 @@ local function buildShortcutDefs(menu, config, on_refresh)
                 else
                     UIManager:show(InfoMessage:new{
                         text    = _("Cloud storage is only available in the file browser."),
+                        timeout = 2,
+                    })
+                end
+            end,
+        },
+        opds = {
+            callback = function()
+                local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+                local opds = PluginLoader:getPluginInstance("opds")
+                if ok and FileManager.instance and not FileManager.instance.tearing_down and opds then
+                    opds:onShowOPDSCatalog()
+                else
+                    UIManager:show(InfoMessage:new{
+                        text    = _("OPDS catalog is only available in the file browser."),
                         timeout = 2,
                     })
                 end

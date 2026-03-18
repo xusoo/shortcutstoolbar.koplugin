@@ -23,7 +23,6 @@ local _        = require("gettext")
 local createBookInfoPanel = require("book_info_panel")
 local packIntoRows        = require("shared_layout")
 local IconWidget          = require("ui/widget/iconwidget")
-local Picker              = require("custom_shortcut_picker")
 local Manager             = require("custom_shortcut_manager")
 
 local SHORTCUT_DATA = require("shortcuts_data")
@@ -333,21 +332,14 @@ local function buildShortcutDefs(menu, config, on_refresh)
         local key = sc.key  -- capture
         defs[key] = {
             callback = function()
-                if sc.path_record then
-                    Picker.replayShortcut(menu, sc.path_record)
-                else
-                    UIManager:show(InfoMessage:new{
-                        text    = _("Long-press to set up this shortcut."),
-                        timeout = 2,
-                    })
-                end
+                Manager.execute(Manager.find(key, view) or sc, menu)
             end,
             hold_callback = function()
                 Manager.openEditDialog(Manager.find(key, view) or sc, menu, on_refresh, view)
             end,
             get_label = function()
                 local s = Manager.find(key, view) or sc
-                return s.path_record and s.path_record.display_label or _("Not assigned")
+                return Manager.hasAction(s) and Manager.getActionDescription(s) or _("Not assigned")
             end,
         }
     end

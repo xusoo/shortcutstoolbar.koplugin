@@ -2,14 +2,16 @@
 Custom Shortcut Manager
 =======================
 Manages user-defined toolbar shortcuts. Each shortcut has a name, an optional
-icon (path to an SVG/PNG file), and a recorded menu navigation path.
+icon (path to an SVG/PNG file), and either a recorded menu navigation path or
+a dispatcher-backed system action.
 
 Shortcuts are stored separately per view:
   G_reader_settings["shortcutstoolbar_custom_shortcuts_reader"]
   G_reader_settings["shortcutstoolbar_custom_shortcuts_fb"]
 
 Each entry:
-  { key="cs_xxx", name="My shortcut", icon_file="/path/icon.svg", path_record={...} }
+    { key="cs_xxx", name="My shortcut", icon_file="/path/icon.svg", path_record={...} }
+    { key="cs_xxx", name="Sleep", icon_file="/path/icon.svg", dispatcher_action="suspend", dispatcher_label="Sleep" }
 
 Public API  (all functions take a `view` parameter: "reader" or "fb")
 ----------
@@ -19,6 +21,8 @@ Public API  (all functions take a `view` parameter: "reader" or "fb")
   M.delete(key, view)                                – removes shortcut and its settings keys
   M.clearAll(view)                                   – wipe everything for a view (for reset)
   M.getShortcutDataItems(view)                       → list in shortcuts_data format
+    M.getActionDescription(shortcut)                   → human-readable action source + label
+    M.execute(shortcut, menu)                          – run the stored action via menu replay or dispatcher
   M.buildSubItems(on_refresh, view)                  → sub_item_table for the menu
   M.openEditDialog(shortcut, menu, on_close, view)   – show create/edit dialog
 --]]
@@ -31,12 +35,14 @@ local function settingsKey(view)
 end
 
 local IconBrowser = require("icon_browser")
+local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local UIManager   = require("ui/uimanager")
 local _           = require("gettext")
 local T           = require("ffi/util").template
 
+local DispatcherActions = require("dispatcher_actions")
 local Picker = require("custom_shortcut_picker")
 
 local M = {}
@@ -192,6 +198,67 @@ function M.getShortcutDataItems(view)
     return result
 end
 
+function M.getActionSource(shortcut)
+    if shortcut and shortcut.dispatcher_action and shortcut.dispatcher_action ~= "" then
+        return "system"
+    end
+    if shortcut and shortcut.path_record then
+        return "menu"
+    end
+    return nil
+end
+
+function M.getActionLabel(shortcut)
+    local source = M.getActionSource(shortcut)
+    if source == "system" then
+        return shortcut.dispatcher_label or shortcut.dispatcher_action
+    end
+    if source == "menu" then
+        return shortcut.path_record.display_label
+    end
+    return _("Not set")
+end
+
+function M.getActionDescription(shortcut)
+    local source = M.getActionSource(shortcut)
+    if source == "system" then
+        return T(_("%1 | %2"), _("System action"), M.getActionLabel(shortcut))
+    end
+    if source == "menu" then
+        return T(_("%1 | %2"), _("Menu action"), M.getActionLabel(shortcut))
+    end
+    return _("Not set")
+end
+
+function M.hasAction(shortcut)
+    return M.getActionSource(shortcut) ~= nil
+end
+
+function M.execute(shortcut, menu)
+    if not shortcut then return false end
+
+    local source = M.getActionSource(shortcut)
+    if source == "system" then
+        local ok, err = DispatcherActions.execute(shortcut.dispatcher_action)
+        if not ok then
+            UIManager:show(InfoMessage:new{
+                text = err,
+                timeout = 3,
+            })
+        end
+        return ok
+    end
+    if source == "menu" then
+        return Picker.replayShortcut(menu, shortcut.path_record)
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = _("Long-press to set up this shortcut."),
+        timeout = 2,
+    })
+    return false
+end
+
 -- ==========================================================================
 -- Edit dialog
 -- ==========================================================================
@@ -210,14 +277,18 @@ function M.openEditDialog(shortcut, menu, on_close, view)
         name        = shortcut.name,
         icon_file   = shortcut.icon_file,
         path_record = shortcut.path_record,
+        dispatcher_action = shortcut.dispatcher_action,
+        dispatcher_label = shortcut.dispatcher_label,
     } or {
         key         = newKey(),
         name        = "",
         icon_file   = nil,
         path_record = nil,
+        dispatcher_action = nil,
+        dispatcher_label = nil,
     }
 
-    local action_label = sc.path_record and sc.path_record.display_label or _("Not set")
+    local action_label = M.getActionDescription(sc)
     local icon_label   = sc.icon_file and sc.icon_file:match("[^/]+$") or _("Default")
 
     local dialog
@@ -242,6 +313,184 @@ function M.openEditDialog(shortcut, menu, on_close, view)
         if n ~= "" then sc.name = n end
     end
 
+    local function applyMenuAction(path_record)
+        sc.path_record = path_record
+        sc.dispatcher_action = nil
+        sc.dispatcher_label = nil
+        if not sc.name or sc.name == "" then
+            sc.name = path_record.display_label
+        end
+    end
+
+    local function applySystemAction(action)
+        sc.path_record = nil
+        sc.dispatcher_action = action.id
+        sc.dispatcher_label = action.title
+        if not sc.name or sc.name == "" then
+            sc.name = action.title
+        end
+    end
+
+    local function reopenCurrentDialog()
+        M.openEditDialog(sc, menu, on_close, view)
+    end
+
+    local function openSystemActionPicker()
+        local actions = DispatcherActions.list()
+        if #actions == 0 then
+            UIManager:show(InfoMessage:new{
+                text = _("No system actions found."),
+                timeout = 3,
+            })
+            reopenCurrentDialog()
+            return
+        end
+
+        local picker
+        local buttons = {}
+        for _i, action in ipairs(actions) do
+            local action_ref = action
+            buttons[#buttons + 1] = {{
+                text = action_ref.title,
+                callback = function()
+                    UIManager:close(picker)
+                    applySystemAction(action_ref)
+                    reopenCurrentDialog()
+                end,
+            }}
+        end
+        buttons[#buttons + 1] = {{
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(picker)
+                reopenCurrentDialog()
+            end,
+        }}
+
+        picker = ButtonDialog:new{
+            title = _("System Actions"),
+            buttons = buttons,
+        }
+        UIManager:show(picker)
+    end
+
+    local function openMenuActionPicker()
+        if view == "fb" or (menu and menu._is_fb_context) then
+            -- FB shortcut: open the live FM menu for picking.
+            local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
+            if not (ok and FileManager.instance and not FileManager.instance.tearing_down) then
+                UIManager:show(InfoMessage:new{
+                    text    = _("Open the file browser first to set this shortcut action."),
+                    timeout = 3,
+                })
+                reopenCurrentDialog()
+                return
+            end
+            FileManager.instance.menu:onShowMenu(nil)
+            local mc = FileManager.instance.menu.menu_container
+            local real_menu = mc and mc[1]
+            if not real_menu then
+                UIManager:show(InfoMessage:new{
+                    text    = _("Could not open the file browser menu."),
+                    timeout = 3,
+                })
+                reopenCurrentDialog()
+                return
+            end
+            local saved_state = snapshotMenuState(real_menu)
+            Picker.startPicking(real_menu, sc.key,
+                function(path_record)
+                    applyMenuAction(path_record)
+                    finishPicking(real_menu, saved_state, reopenCurrentDialog)
+                end,
+                function()
+                    finishPicking(real_menu, saved_state, function()
+                        M.openEditDialog(M.find(sc.key, view) or sc, menu, on_close, view)
+                    end)
+                end,
+                "fb")
+            return
+        end
+
+        -- Reader shortcut: requires the reader menu to be open.
+        if not menu or not menu.updateItems then
+            UIManager:show(InfoMessage:new{
+                text    = _("Open a book first to set this shortcut action."),
+                timeout = 3,
+            })
+            reopenCurrentDialog()
+            return
+        end
+
+        -- Save the full menu state so we can return here after picking.
+        local saved_state = snapshotMenuState(menu)
+        -- Drain any sub-menu stack so picking starts from the tab root.
+        if menu.item_table_stack then
+            while #menu.item_table_stack > 0 do
+                menu.item_table = table.remove(menu.item_table_stack)
+            end
+            menu.page = 1
+            menu:updateItems(1)
+        end
+        Picker.startPicking(menu, sc.key,
+            function(path_record)
+                applyMenuAction(path_record)
+                finishPicking(menu, saved_state, reopenCurrentDialog)
+            end,
+            function()
+                finishPicking(menu, saved_state, function()
+                    M.openEditDialog(M.find(sc.key, view) or sc, menu, on_close, view)
+                end)
+            end,
+            "reader")
+    end
+
+    local function openActionSourcePicker()
+        local choice_dialog
+        choice_dialog = ButtonDialog:new{
+            title = _("Choose action source"),
+            buttons = {
+                
+                {{
+                    text = _("System action"),
+                    callback = function()
+                        UIManager:close(choice_dialog)
+                        openSystemActionPicker()
+                    end,
+                }},
+                {{
+                    text = _("Run a built-in KOReader action directly. Safer approach if the desired action is exposed here."),
+                    enabled = false,
+                    font_size = 18,
+                    font_bold = false,
+                    callback = function() end,
+                }},
+                {{
+                    text = _("Menu action"),
+                    callback = function()
+                        UIManager:close(choice_dialog)
+                        openMenuActionPicker()
+                    end,
+                }},
+                {{
+                    text = _("Browse the KOReader menu to find an action by name. Less stable, but can reach actions not exposed to the dispatcher."),
+                    enabled = false,
+                    font_size = 18,
+                    font_bold = false,
+                    callback = function() end,
+                }},
+                {{
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(choice_dialog)
+                        reopenCurrentDialog()
+                    end,
+                }},
+            },
+        }
+        UIManager:show(choice_dialog)
+    end
+
     local buttons = {
         -- Row 1 ── Cancel / Save
         {
@@ -263,84 +512,7 @@ function M.openEditDialog(shortcut, menu, on_close, view)
                     snapshotName()
                     UIManager:close(dialog)
 
-                    if view == "fb" or (menu and menu._is_fb_context) then
-                        -- FB shortcut: open the live FM menu for picking.
-                        local ok, FileManager = pcall(require, "apps/filemanager/filemanager")
-                        if not (ok and FileManager.instance and not FileManager.instance.tearing_down) then
-                            UIManager:show(InfoMessage:new{
-                                text    = _("Open the file browser first to set this shortcut action."),
-                                timeout = 3,
-                            })
-                            M.openEditDialog(sc, menu, on_close, view)
-                            return
-                        end
-                        FileManager.instance.menu:onShowMenu(nil)
-                        local mc = FileManager.instance.menu.menu_container
-                        local real_menu = mc and mc[1]
-                        if not real_menu then
-                            UIManager:show(InfoMessage:new{
-                                text    = _("Could not open the file browser menu."),
-                                timeout = 3,
-                            })
-                            M.openEditDialog(sc, menu, on_close, view)
-                            return
-                        end
-                        local saved_state = snapshotMenuState(real_menu)
-                        Picker.startPicking(real_menu, sc.key,
-                            function(path_record)
-                                sc.path_record = path_record
-                                if not sc.name or sc.name == "" then
-                                    sc.name = path_record.display_label
-                                end
-                                finishPicking(real_menu, saved_state, function()
-                                    M.openEditDialog(sc, menu, on_close, view)
-                                end)
-                            end,
-                            function()
-                                finishPicking(real_menu, saved_state, function()
-                                    M.openEditDialog(M.find(sc.key, view) or sc, menu, on_close, view)
-                                end)
-                            end,
-                            "fb")
-                        return
-                    end
-
-                    -- Reader shortcut: requires the reader menu to be open.
-                    if not menu or not menu.updateItems then
-                        UIManager:show(InfoMessage:new{
-                            text    = _("Open a book first to set this shortcut action."),
-                            timeout = 3,
-                        })
-                        M.openEditDialog(sc, menu, on_close, view)
-                        return
-                    end
-
-                    -- Save the full menu state so we can return here after picking.
-                    local saved_state = snapshotMenuState(menu)
-                    -- Drain any sub-menu stack so picking starts from the tab root.
-                    if menu.item_table_stack then
-                        while #menu.item_table_stack > 0 do
-                            menu.item_table = table.remove(menu.item_table_stack)
-                        end
-                        menu.page = 1
-                        menu:updateItems(1)
-                    end
-                    Picker.startPicking(menu, sc.key,
-                        function(path_record)
-                            sc.path_record = path_record
-                            if not sc.name or sc.name == "" then
-                                sc.name = path_record.display_label
-                            end
-                            finishPicking(menu, saved_state, function()
-                                M.openEditDialog(sc, menu, on_close, view)
-                            end)
-                        end,
-                        function()
-                            finishPicking(menu, saved_state, function()
-                                M.openEditDialog(M.find(sc.key, view) or sc, menu, on_close, view)
-                            end)
-                        end,
-                        "reader")
+                    openActionSourcePicker()
                 end,
             },
             {
@@ -424,7 +596,7 @@ function M.buildSubItems(on_refresh, view)
 
     for _i, sc in ipairs(all) do
         local sc_ref = sc  -- capture
-        local action = sc.path_record and sc.path_record.display_label or _("not set")
+        local action = M.getActionDescription(sc_ref):lower()
         table.insert(items, {
             text           = (sc.name and sc.name ~= "") and sc.name or _("Unnamed shortcut"),
             mandatory      = action,

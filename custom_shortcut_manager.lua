@@ -7,7 +7,8 @@ icon (path to an SVG/PNG file), and either:
   - a recorded menu navigation path
   - a dispatcher-backed system action
 
-Shortcuts are stored separately per view:
+Shortcuts are stored separately for the reader, while the file browser and
+SimpleUI share a single custom-shortcut list:
   G_reader_settings["shortcutstoolbar_custom_shortcuts_reader"]
   G_reader_settings["shortcutstoolbar_custom_shortcuts_fb"]
 
@@ -44,8 +45,15 @@ if not package.path:find(PLUGIN_DIR, 1, true) then
     package.path = string.format("%s/?.lua;%s", PLUGIN_DIR, package.path)
 end
 
+local function storageView(view)
+    if view == "reader" then
+        return "reader"
+    end
+    return "fb"
+end
+
 local function settingsKey(view)
-    return "shortcutstoolbar_custom_shortcuts_" .. ((view == "filebrowser") and "fb" or (view or "reader"))
+    return "shortcutstoolbar_custom_shortcuts_" .. storageView(view)
 end
 
 local function viewSettingsKey(view)
@@ -117,6 +125,45 @@ local function candidateViews(view)
     return normalizeViews(view)
 end
 
+local function relatedViews(view)
+    view = M.normalizeView(view)
+    if view == "fb" or view == "simpleui" then
+        return { "fb", "simpleui" }
+    end
+    return { view }
+end
+
+local function clearShortcutFromSelections(key, views)
+    for _, view in ipairs(views) do
+        local stored = G_reader_settings:readSetting(viewSettingsKey(view)) or {}
+        local changed = false
+
+        if stored.items and stored.items[key] ~= nil then
+            stored.items[key] = nil
+            changed = true
+        end
+        if stored.item_order then
+            local parts = {}
+            local removed = false
+            for item_key in stored.item_order:gmatch("([^,]+)") do
+                if item_key ~= key then
+                    table.insert(parts, item_key)
+                else
+                    removed = true
+                end
+            end
+            if removed then
+                stored.item_order = table.concat(parts, ",")
+                changed = true
+            end
+        end
+
+        if changed then
+            G_reader_settings:saveSetting(viewSettingsKey(view), stored)
+        end
+    end
+end
+
 local function getPatchCallbackRegistry()
     local registry = rawget(_G, PATCH_CALLBACKS_KEY)
     if registry then return registry end
@@ -137,7 +184,7 @@ local function unregisterPatchCallback(id, view)
     if not id then return end
 
     local registry = getPatchCallbackRegistry()
-    for _, candidate in ipairs(candidateViews(view)) do
+    for _, candidate in ipairs(relatedViews(view)) do
         if registry[candidate] then
             registry[candidate][id] = nil
         end
@@ -148,7 +195,7 @@ local function getPatchCallback(shortcut, view)
     if not shortcut or not shortcut.id then return nil end
 
     local registry = getPatchCallbackRegistry()
-    for _, candidate in ipairs(candidateViews(view)) do
+    for _, candidate in ipairs(relatedViews(view)) do
         local callbacks = registry[candidate]
         if callbacks and callbacks[shortcut.id] then
             return callbacks[shortcut.id], candidate
@@ -278,16 +325,7 @@ function M.delete(key, view)
             M.saveAll(all, view)
             unregisterPatchCallback(shortcut.id, view)
 
-            local stored = G_reader_settings:readSetting(viewSettingsKey(view)) or {}
-            if stored.items then stored.items[key] = nil end
-            if stored.item_order then
-                local parts = {}
-                for item_key in stored.item_order:gmatch("([^,]+)") do
-                    if item_key ~= key then table.insert(parts, item_key) end
-                end
-                stored.item_order = table.concat(parts, ",")
-            end
-            G_reader_settings:saveSetting(viewSettingsKey(view), stored)
+            clearShortcutFromSelections(key, relatedViews(view))
             return
         end
     end
@@ -302,18 +340,9 @@ function M.clearAll(view)
         unregisterPatchCallback(shortcut.id, view)
     end
 
-    local stored = G_reader_settings:readSetting(viewSettingsKey(view)) or {}
-    if stored.items then
-        for key in pairs(keys) do stored.items[key] = nil end
+    for key in pairs(keys) do
+        clearShortcutFromSelections(key, relatedViews(view))
     end
-    if stored.item_order then
-        local parts = {}
-        for key in stored.item_order:gmatch("([^,]+)") do
-            if not keys[key] then table.insert(parts, key) end
-        end
-        stored.item_order = table.concat(parts, ",")
-    end
-    G_reader_settings:saveSetting(viewSettingsKey(view), stored)
     G_reader_settings:delSetting(settingsKey(view))
 end
 

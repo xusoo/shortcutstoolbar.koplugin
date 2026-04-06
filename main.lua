@@ -23,6 +23,7 @@ local UIManager       = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ConfirmBox      = require("ui/widget/confirmbox")
 local InfoMessage     = require("ui/widget/infomessage")
+local SpinWidget      = require("ui/widget/spinwidget")
 local Manager         = require("custom_shortcut_manager")
 local ToolbarSettings = require("toolbar_settings")
 local SimpleUIIntegration = require("simpleui_integration")
@@ -333,7 +334,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         end,
                         keep_menu_open = true,
                         callback       = function(touchmenu_instance)
-                            UIManager:show(require("ui/widget/spinwidget"):new{
+                            UIManager:show(SpinWidget:new{
                                 title_text    = _("Icon size"),
                                 value         = reader_config.icon_size,
                                 value_min     = 14,
@@ -380,7 +381,7 @@ function ReaderToolbar:addToMainMenu(menu_items)
                         end,
                         keep_menu_open = true,
                         callback       = function(touchmenu_instance)
-                            UIManager:show(require("ui/widget/spinwidget"):new{
+                            UIManager:show(SpinWidget:new{
                                 title_text    = _("Icon size"),
                                 value         = fb_config.icon_size,
                                 value_min     = 14,

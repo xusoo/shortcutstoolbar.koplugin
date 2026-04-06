@@ -65,7 +65,7 @@ end
 
 local M = {}
 
-M.id = "readertoolbar_shortcuts"
+M.id = "shortcutstoolbar"
 M.name = _("Shortcuts Toolbar")
 M.label = nil
 M.default_on = false

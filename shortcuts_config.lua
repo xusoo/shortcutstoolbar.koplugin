@@ -80,7 +80,7 @@ end
 local ShortcutsConfigDialog = InputContainer:extend{
     enabled_keys  = nil,   -- ordered list of active shortcut keys
     disabled_keys = nil,   -- list of inactive shortcut keys
-    view          = nil,   -- "reader" or "fb" – used to load custom shortcuts
+    view          = nil,   -- "reader", "fb", or "simpleui" – used to load custom shortcuts
     on_save       = nil,   -- function(enabled_keys, disabled_keys)
     _sel          = nil,   -- { bar = "enabled"|"disabled", idx = N } or nil
     _movable      = nil,

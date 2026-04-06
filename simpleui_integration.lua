@@ -2,7 +2,7 @@ local logger = require("logger")
 
 local M = {}
 
-local MODULE_ID = "readertoolbar_shortcuts"
+local MODULE_ID = "shortcutstoolbar"
 local AFTER_MODULE_ID = "clock"
 
 local function containsById(list, id)
@@ -41,7 +41,7 @@ end
 function M.install()
     local ok, Registry = pcall(require, "desktop_modules/moduleregistry")
     if not ok or not Registry then return false end
-    if Registry._readertoolbar_shortcuts_patched then return true end
+    if Registry._shortcutstoolbar_patched then return true end
 
     local orig_list = Registry.list
     local orig_get = Registry.get
@@ -73,7 +73,7 @@ function M.install()
         return order
     end
 
-    Registry._readertoolbar_shortcuts_patched = true
+    Registry._shortcutstoolbar_patched = true
     return true
 end
 

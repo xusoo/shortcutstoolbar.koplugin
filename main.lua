@@ -116,7 +116,7 @@ local function resetToHomeState(menu, cfg)
                 w.state  = "normal"
             end
         end
-        if menu.bar.bar_sep   then menu.bar.bar_sep.empty_segments = nil end
+        if menu.bar.bar_sep   then menu.bar.bar_sep.empty_segments = nil; menu.bar.bar_sep.style = "none" end
         if menu.bar.icon_seps then
             for _, sep in ipairs(menu.bar.icon_seps) do sep.style = "none" end
         end
@@ -220,6 +220,10 @@ function ReaderToolbar:_applyMenuPatches()
     local orig_switchTab = TouchMenu.switchMenuTab
     TouchMenu.switchMenuTab = function(menu, tab_num)
         if plugin:onSwitchTab(menu, tab_num) then return end
+        -- Restore the separator line when switching to a real tab.
+        if menu.bar and menu.bar.bar_sep then
+            menu.bar.bar_sep.style = "solid"
+        end
         return orig_switchTab(menu, tab_num)
     end
 

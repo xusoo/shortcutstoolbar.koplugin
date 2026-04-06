@@ -25,6 +25,7 @@ local Device      = require("device")
 local ImageWidget = require("ui/widget/imagewidget")
 local Menu        = require("ui/widget/menu")
 local PathChooser = require("ui/widget/pathchooser")
+local Size        = require("ui/size")
 local UIManager   = require("ui/uimanager")
 local ffiUtil     = require("ffi/util")
 local _           = require("gettext")
@@ -50,20 +51,44 @@ local IconBrowser = PathChooser:extend{
 }
 
 function IconBrowser:init()
-    self.title = _("Choose icon")
+    self.title = _('Choose icon')
     -- Show only SVG files; directories are always shown for navigation.
     self.file_filter = function(filename)
-        return filename:lower():match("%.svg$") ~= nil
+        return filename:lower():match('%.svg$') ~= nil
     end
     -- state_w must be set before PathChooser.init() triggers the first
     -- updateItems() call so that MenuItem reserves the correct left padding.
-    self.state_w = THUMB_SIZE + THUMB_GAP
+    self.state_w = Device.screen:scaleBySize(32) + Device.screen:scaleBySize(6)
     -- CoverBrowser may patch FileChooser._recalculateDimen with a version
     -- (e.g. MosaicMenu._recalculateDimen) that does not set self.font_size.
     -- Since updateItems() bypasses FileChooser and calls Menu.updateItems
-    -- directly, ensure we always use the standard Menu._recalculateDimen.
-    self._recalculateDimen = Menu._recalculateDimen
+    -- directly, ensure we always use the standard Menu._recalculateDimen,
+    -- wrapped with our state_w guard (see below).
+    self._recalculateDimen = IconBrowser._recalculateDimen
     PathChooser.init(self)
+end
+
+-- Override _recalculateDimen so that state_w is clamped relative to
+-- item_dimen.w immediately after it is set.  This guarantees that
+-- MenuItem always sees a positive available_width regardless of when or
+-- how many times _recalculateDimen is called.
+--
+-- MenuItem computes:
+--   content_width   = item_dimen.w - 2 * Size.padding.fullscreen
+--   available_width = content_width - state_w - mandatory_padding - mandatory_w
+-- A non-positive available_width causes xtext:makeLine to crash with
+-- 'width must be strictly positive'.
+function IconBrowser:_recalculateDimen(no_recalculate_dimen)
+    Menu._recalculateDimen(self, no_recalculate_dimen)
+    if not self.item_dimen then return end
+    local content_w = math.max(0, self.item_dimen.w - 2 * Size.padding.fullscreen)
+    -- Reserve at most 1/4 of content_w for the thumbnail column so the
+    -- remaining 3/4 is always available for filename + mandatory text.
+    local max_state_w = math.max(1, math.floor(content_w / 4))
+    local ts = Device.screen:scaleBySize(32)
+    local tg = Device.screen:scaleBySize(6)
+    self.state_w     = math.min(ts + tg, max_state_w)
+    self._thumb_size = math.max(0, math.min(ts, self.state_w - tg))
 end
 
 -- ---------------------------------------------------------------------------
@@ -96,8 +121,11 @@ function IconBrowser:updateItems(select_number, no_recalculate_dimen)
     -- Replicate the one extra line FileChooser.updateItems normally appends.
     self.path_items[self.path] = (self.page - 1) * self.perpage + (select_number or 1)
 
-    local item_h   = self.item_dimen and self.item_dimen.h or THUMB_SIZE
-    local center_y = math.max(0, math.floor((item_h - THUMB_SIZE) / 2))
+    local eff_thumb = self._thumb_size or 0
+    if eff_thumb <= 0 then return end  -- no thumbnails to inject on very narrow screens
+
+    local item_h   = self.item_dimen and self.item_dimen.h or eff_thumb
+    local center_y = math.max(0, math.floor((item_h - eff_thumb) / 2))
 
     for _, item_widget in ipairs(self.item_group) do
         local entry = item_widget.entry
@@ -116,8 +144,8 @@ function IconBrowser:updateItems(select_number, no_recalculate_dimen)
         -- Insert the thumbnail at index 1 so it is painted behind the text.
         table.insert(og, 1, ImageWidget:new{
             file           = filepath,
-            width          = THUMB_SIZE,
-            height         = THUMB_SIZE,
+            width          = eff_thumb,
+            height         = eff_thumb,
             alpha          = true,
             overlap_offset = { 0, center_y },
         })

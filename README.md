@@ -2,6 +2,8 @@
 
 Shortcuts Toolbar adds a configurable shortcut bar to KOReader's reader and file-browser menus.
 
+![Screenshot](screenshot.png)
+
 It gives you quick access to common actions, optional reader information, and separate shortcut layouts for the reader and the file browser.
 
 ## What the plugin does

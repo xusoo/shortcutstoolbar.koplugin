@@ -201,6 +201,22 @@ local function buildShortcutDefs(menu, config, on_refresh)
                             and (text:find(_("Font")) or text:find(_("font")))
                     end)
                 end
+                -- Also open the bottom Font settings config panel
+                local ReaderUI = require("apps/reader/readerui")
+                local ui = ReaderUI.instance
+                if ui and ui.document then
+                    local config_module = ui.config
+                    if config_module and config_module.options then
+                        -- Find the font panel index dynamically (icon "appbar.textsize")
+                        for i, panel in ipairs(config_module.options) do
+                            if panel.icon == "appbar.textsize" then
+                                config_module.last_panel_index = i
+                                break
+                            end
+                        end
+                    end
+                    UIManager:broadcastEvent(Event:new("ShowConfigMenu"))
+                end
             end,
         },
         frontlight = {

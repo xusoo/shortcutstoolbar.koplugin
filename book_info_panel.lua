@@ -65,19 +65,34 @@ local function buildMetaGroup(props, ui, text_w)
     local progress_text
     local percent
 
+    -- Screen pages remaining — used for the time estimate in both branches.
+    -- getTotalPagesLeft is the canonical source (matches the reader footer),
+    -- and handles CRE books with hidden flows correctly.
+    local current_doc_page = ui:getCurrentPage() or 0
+    local doc_pages_left   = ui.document:getTotalPagesLeft(current_doc_page)
+    local time_left = (ui.statistics and doc_pages_left and doc_pages_left > 0)
+        and ui.statistics:getTimeForPages(doc_pages_left) or nil
+
     if ui.pagemap and ui.pagemap:wantsPageLabels() then
         -- Use stable (physical) page labels when the book has a page map
         local label_cur, idx, count = ui.pagemap:getCurrentPageLabel(false)
         local label_last = ui.pagemap:getLastPageLabel(true)
         percent = (count and count > 0)
             and math.floor(idx / count * 100) or 0
-        progress_text = T(_("Page %1 of %2 (%3%)"), label_cur, label_last, percent)
+        if time_left then
+            progress_text = T(_("Page %1 of %2 (%3% - %4 left)"), label_cur, label_last, percent, time_left)
+        else
+            progress_text = T(_("Page %1 of %2 (%3%)"), label_cur, label_last, percent)
+        end
     else
-        local current_page = ui:getCurrentPage() or 0
-        local total_pages  = ui.document:getPageCount() or 0
+        local total_pages = ui.document:getPageCount() or 0
         percent = (total_pages > 0)
-            and math.floor(current_page / total_pages * 100) or 0
-        progress_text = T(_("Page %1 of %2 (%3%)"), current_page, total_pages, percent)
+            and math.floor(current_doc_page / total_pages * 100) or 0
+        if time_left then
+            progress_text = T(_("Page %1 of %2 (%3% - %4 left)"), current_doc_page, total_pages, percent, time_left)
+        else
+            progress_text = T(_("Page %1 of %2 (%3%)"), current_doc_page, total_pages, percent)
+        end
     end
 
     local small_face  = Font:getFace("smallffont")

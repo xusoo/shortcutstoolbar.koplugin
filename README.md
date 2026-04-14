@@ -6,18 +6,18 @@ It gives you quick access to common actions, optional reader information, and se
 
 ## What the plugin does
 
-- Adds a toolbar home state to the reader menu.
+- Adds a toolbar to the reader menu.
 - Adds a toolbar to the file browser, either inside the menu or as a persistent top bar.
 - Can show book info, time, battery, and a back-to-library button in the reader.
 - Lets you enable, disable, and reorder built-in and custom shortcuts.
 - Supports custom shortcuts based on menu actions, dispatcher actions, or patch callbacks.
-- Includes a patch API for adding shortcuts from startup patches.
+- Includes a patch API for creating your custom shortcuts.
 
 ## Available shortcuts
 
 Reader-only shortcuts:
 
-- Font
+- Font family settings
 - Bookmarks
 - Search
 - Table of contents
@@ -33,7 +33,6 @@ Shared shortcuts:
 - Battery
 - Calendar statistics
 - Restart KOReader
-- Spacer
 - Spacer
 
 File-browser shortcuts:
@@ -56,9 +55,9 @@ Each custom shortcut can have its own name, icon, and action source.
 
 Supported action sources:
 
-- `System action`: runs a dispatcher action directly.
-- `Menu action`: records and replays a KOReader menu path.
-- `Patch callback`: executes a Lua callback registered by a startup patch.
+- `System action`: runs a dispatcher action directly. Best for standard KOReader actions; limited to what the dispatcher exposes.
+- `Menu action`: records and replays a KOReader menu path. Works for any menu item without coding, but can break if the menu structure changes between versions.
+- `Patch callback`: executes a Lua callback registered by a startup patch. Most flexible option, but requires writing Lua code in a patch file.
 
 ## Patch API
 
@@ -101,7 +100,6 @@ The SimpleUI module provides:
 - Its own icon-size setting.
 - Its own shortcut selection.
 - The same custom shortcut list used by the file browser.
-- Its own reset action.
 
 SimpleUI module settings are available under `Home Screen -> Modules -> Module Settings`.
 

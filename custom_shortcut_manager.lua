@@ -38,7 +38,7 @@ Public API
 
 local PLUGIN_DIR = debug.getinfo(1, "S").source:gsub("^@(.*)/[^/]*", "%1")
 local ICON_DIR = PLUGIN_DIR .. "/icons"
-local PATCH_CALLBACKS_KEY = "__readertoolbar_patch_shortcut_callbacks"
+local PATCH_CALLBACKS_KEY = "__shortcutstoolbar_patch_shortcut_callbacks"
 local PATCH_VIEWS = { "reader", "fb", "simpleui" }
 
 if not package.path:find(PLUGIN_DIR, 1, true) then
@@ -74,7 +74,7 @@ local Picker = require("custom_shortcut_picker")
 local M = {}
 
 local function fail(message)
-    error("readertoolbar custom shortcut: " .. message, 2)
+    error("shortcutstoolbar custom shortcut: " .. message, 2)
 end
 
 local function cloneTable(value)

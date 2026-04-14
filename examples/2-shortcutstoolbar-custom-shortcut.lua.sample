@@ -1,9 +1,9 @@
 -- Copy this file to your KOReader user patches directory and rename it to:
---   2-readertoolbar-custom-shortcut.lua
+--   2-shortcutstoolbar-custom-shortcut.lua
 
 local userpatch = require("userpatch")
 
-userpatch.registerPatchPluginFunc("readertoolbar", function()
+userpatch.registerPatchPluginFunc("shortcutstoolbar", function()
     local ok, Shortcuts = pcall(require, "custom_shortcut_manager")
     if not ok then return end
 

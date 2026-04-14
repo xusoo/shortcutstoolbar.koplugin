@@ -34,7 +34,7 @@ end
 local function getModule()
     local ok, mod = pcall(require, "simpleui_module")
     if ok then return mod end
-    logger.warn("readertoolbar: failed to load SimpleUI module: " .. tostring(mod))
+    logger.warn("shortcutstoolbar: failed to load SimpleUI module: " .. tostring(mod))
     return nil
 end
 

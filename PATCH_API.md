@@ -1,8 +1,8 @@
-# Readertoolbar Patch API
+# Shortcutstoolbar Patch API
 
 Custom shortcuts can be created from a startup patch without touching raw `G_reader_settings` tables.
 
-Copy the sample file at `plugins/readertoolbar.koplugin/examples/2-readertoolbar-custom-shortcut.lua.sample` into your KOReader user `patches` directory and rename it to `2-readertoolbar-custom-shortcut.lua` if you want to enable it.
+Copy the sample file at `plugins/shortcutstoolbar.koplugin/examples/2-shortcutstoolbar-custom-shortcut.lua.sample` into your KOReader user `patches` directory and rename it to `2-shortcutstoolbar-custom-shortcut.lua` if you want to enable it.
 
 Registration only adds the shortcut to the available custom shortcut pool. It does not enable the shortcut in any toolbar automatically. Enable it afterward from the relevant `Configure shortcuts` screen.
 
@@ -11,7 +11,7 @@ Patch entry point:
 ```lua
 local userpatch = require("userpatch")
 
-userpatch.registerPatchPluginFunc("readertoolbar", function()
+userpatch.registerPatchPluginFunc("shortcutstoolbar", function()
     local ok, Shortcuts = pcall(require, "custom_shortcut_manager")
     if not ok then return end
 
@@ -22,7 +22,7 @@ end)
 Patch callback shortcut:
 
 ```lua
-userpatch.registerPatchPluginFunc("readertoolbar", function()
+userpatch.registerPatchPluginFunc("shortcutstoolbar", function()
     local ok, Shortcuts = pcall(require, "custom_shortcut_manager")
     if not ok then return end
 

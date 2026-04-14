@@ -62,14 +62,14 @@ Supported action sources:
 
 ## Patch API
 
-The patch API is documented in `PATCH_API.md` and a ready-to-copy example is included at `examples/2-readertoolbar-custom-shortcut.lua.sample`.
+The patch API is documented in `PATCH_API.md` and a ready-to-copy example is included at `examples/2-shortcutstoolbar-custom-shortcut.lua.sample`.
 
 Patches register through KOReader's `userpatch` hook:
 
 ```lua
 local userpatch = require("userpatch")
 
-userpatch.registerPatchPluginFunc("readertoolbar", function()
+userpatch.registerPatchPluginFunc("shortcutstoolbar", function()
     local ok, Shortcuts = pcall(require, "custom_shortcut_manager")
     if not ok then return end
 

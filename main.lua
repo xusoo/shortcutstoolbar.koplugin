@@ -160,12 +160,12 @@ end
 -- Plugin
 -- ==========================================================================
 
-local ReaderToolbar = WidgetContainer:extend{
-    name        = "readertoolbar",
+local ShortcutsToolbar = WidgetContainer:extend{
+    name        = "shortcutstoolbar",
     is_doc_only = false,
 }
 
-function ReaderToolbar:init()
+function ShortcutsToolbar:init()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
@@ -203,7 +203,7 @@ end
 --- Installs the three TouchMenu monkey-patches.
 -- Override onMenuInit / onSwitchTab / onMenuUpdateItems in a user patch to
 -- customise behaviour without re-patching TouchMenu directly.
-function ReaderToolbar:_applyMenuPatches()
+function ShortcutsToolbar:_applyMenuPatches()
     local plugin = self
 
     -- Patch 1: start every applicable menu in the home (closed) state.
@@ -238,14 +238,14 @@ end
 
 --- Called after TouchMenu:init() for a managed menu.
 -- Override in a patch to change the initial home-state behaviour.
-function ReaderToolbar:onMenuInit(menu, cfg)
+function ShortcutsToolbar:onMenuInit(menu, cfg)
     resetToHomeState(menu, cfg or menuConfig(menu))
 end
 
 --- Called when the user taps a menu tab.
 -- Return true to consume the event (prevent normal tab-switching).
 -- Override in a patch to change tap-to-collapse logic.
-function ReaderToolbar:onSwitchTab(menu, tab_num)
+function ShortcutsToolbar:onSwitchTab(menu, tab_num)
     local cfg = menuConfig(menu)
     if menu.cur_tab == tab_num and cfg and cfg.enabled and cfg.placement ~= "persistent" then
         resetToHomeState(menu, cfg)
@@ -255,7 +255,7 @@ end
 
 --- Called after TouchMenu:updateItems().
 -- Override in a patch to change home-panel injection.
-function ReaderToolbar:onMenuUpdateItems(menu)
+function ShortcutsToolbar:onMenuUpdateItems(menu)
     local cfg = menuConfig(menu)
     if not cfg or not cfg.enabled or cfg.placement == "persistent" or menu.cur_tab then return end
     -- Only inject if the home panel isn't already present.
@@ -274,8 +274,8 @@ function ReaderToolbar:onMenuUpdateItems(menu)
     end
 end
 
-function ReaderToolbar:addToMainMenu(menu_items)
-    menu_items.readertoolbar = {
+function ShortcutsToolbar:addToMainMenu(menu_items)
+    menu_items.shortcutstoolbar = {
         text         = _("Shortcuts toolbar"),
         sorting_hint = "setting",
         sub_item_table = {
@@ -473,4 +473,4 @@ function ReaderToolbar:addToMainMenu(menu_items)
     }
 end
 
-return ReaderToolbar
+return ShortcutsToolbar

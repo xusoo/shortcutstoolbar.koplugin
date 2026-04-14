@@ -534,7 +534,7 @@ createHomeContent = function(menu, config, reset_fn)
 
     local book_panel
     if config.show_book_info then
-        local ok, panel = pcall(createBookInfoPanel, math.floor(total_w * 0.7), config.view)
+        local ok, panel = pcall(createBookInfoPanel, math.floor(total_w * 0.7))
         if ok then book_panel = panel end
     end
 
@@ -595,7 +595,7 @@ createHomeContent = function(menu, config, reset_fn)
                 callback      = back_callback,
             },
             Button:new{
-                text           = _("Back to library"),
+                text           = _("Back"),
                 face           = Font:getFace("smallffont"),
                 text_font_bold = false,
                 text_font_size = 18,

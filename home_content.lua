@@ -578,8 +578,7 @@ createHomeContent = function(menu, config, reset_fn)
             if menu.close_callback then menu.close_callback() end
             local ReaderUI = require("apps/reader/readerui")
             if ReaderUI.instance then
-                local file = ReaderUI.instance.document and ReaderUI.instance.document.file
-                ReaderUI.instance:showFileManager(file)
+                ReaderUI.instance:onHome()
             end
         end
         back_btn = HorizontalGroup:new{

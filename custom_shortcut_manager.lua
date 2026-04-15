@@ -429,6 +429,9 @@ function M.execute(shortcut, menu)
         return ok
     end
     if source == "system" then
+        -- Close the menu before dispatching so events reach the reader UI
+        -- (sendEvent targets the top widget; the menu would intercept them).
+        if menu and menu.close_callback then menu.close_callback() end
         local ok, err = DispatcherActions.execute(shortcut.dispatcher_action)
         if not ok then
             UIManager:show(InfoMessage:new{

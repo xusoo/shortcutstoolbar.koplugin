@@ -192,7 +192,15 @@ function _InnerChooser:onMenuSelect(item)
     local path = item.path or ""
     if path:lower():match("%.svg$") then
         local real_path = ffiUtil.realpath(path) or path
-        UIManager:close(self.show_parent or self)
+        -- Go through show_parent:onClose() so the filter-bar VirtualKeyboard is
+        -- removed from the UIManager stack before the widget tree is freed.
+        -- Calling UIManager:close(show_parent) directly would propagate CloseWidget
+        -- to _filter_input (which calls keyboard:free()) while VK is still stacked.
+        if self.show_parent then
+            self.show_parent:onClose()
+        else
+            UIManager:close(self)
+        end
         if self.onConfirm then
             self.onConfirm(real_path)
         end
@@ -208,23 +216,30 @@ function _InnerChooser:onMenuHold(item)
     return PathChooser.onMenuHold(self, item)
 end
 
-function _InnerChooser:onClose()
-    UIManager:close(self.show_parent or self)
-end
+-- _InnerChooser:onClose is intentionally NOT overridden here.
+-- Menu:onClose (Back key) calls self:onCloseAllMenus(), which calls
+-- close_callback(), which calls IconBrowser:onClose().  That path correctly
+-- closes the filter-bar VirtualKeyboard before tearing down the widget tree.
 
 -- ---------------------------------------------------------------------------
 -- IconBrowser: outer wrapper widget
 -- Stacks a filter bar above _InnerChooser.  Pass this to UIManager:show().
 -- ---------------------------------------------------------------------------
 local IconBrowser = WidgetContainer:extend{
-    path      = PLUGIN_DIR .. "/icons",
-    onConfirm = nil,
-    -- NOTE: covers_fullscreen is intentionally NOT set here.
-    -- SimpleUI patches UIManager.close and re-opens its homescreen whenever a
-    -- covers_fullscreen widget closes (when "Start with Homescreen" is on).
-    -- IconBrowser is a transient overlay, not a navigation destination, so we
-    -- must not trigger that logic.  The minor overhead of UIManager repainting
-    -- the InputDialog that sits below us is perfectly acceptable.
+    path             = PLUGIN_DIR .. "/icons",
+    onConfirm        = nil,
+    -- is_always_active lets IconBrowser receive gesture events from UIManager's
+    -- "always-active walk" even when the filter-bar VirtualKeyboard (modal) sits
+    -- on top of it as a separate window-level widget.  Without this, taps in the
+    -- icon list while the keyboard is open are not consumed by IconBrowser,
+    -- reach InputDialog's own is_always_active Tap handler (which sees the tap as
+    -- "outside dialog frame") and close the shortcut editor.  Since IconBrowser is
+    -- above InputDialog on the UIManager stack the walk visits it first, so
+    -- stop_events_propagation on _InnerChooser swallows the tap before InputDialog
+    -- ever sees it.
+    -- NOTE: covers_fullscreen is intentionally NOT set — SimpleUI patches
+    -- UIManager.close and re-opens its homescreen for covers_fullscreen widgets.
+    is_always_active = true,
 }
 
 function IconBrowser:init()
@@ -233,7 +248,7 @@ function IconBrowser:init()
     self._filter_input = InputText:new{
         text      = "",
         hint      = _("Filter by name\226\128\166"),
-        width     = self.dimen.w - 2 * Size.padding.default,
+        width     = self.dimen.w - 4 * Size.padding.default,
         height    = nil,
         face      = Font:getFace("smallinfofont"),
         padding   = Size.padding.small,
@@ -246,6 +261,19 @@ function IconBrowser:init()
             self:_applyFilter()
         end,
     }
+    -- Intercept Enter immediately (without the 0.3 s scheduleIn delay that
+    -- InputText:addChars uses for enter_callback) so the VirtualKeyboard is
+    -- closed synchronously from within the key-tap event handler.  On Kindle
+    -- the delayed close causes the UI to become unresponsive after the
+    -- keyboard disappears; closing inline — the same pattern used by every
+    -- KOReader dialog button — avoids the race entirely.
+    self._filter_input.addChars = function(inp, chars)
+        if chars == "\n" then
+            inp:onCloseKeyboard()
+            return
+        end
+        InputText.addChars(inp, chars)
+    end
     self._filter_bar = FrameContainer:new{
         padding        = Size.padding.default,
         padding_top    = Size.padding.small,

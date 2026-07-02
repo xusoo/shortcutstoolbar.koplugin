@@ -106,3 +106,9 @@ The SimpleUI module provides:
 SimpleUI module settings are available under `Home Screen -> Modules -> Module Settings`.
 
 Patch callbacks can also target the SimpleUI module by registering a shortcut with `view = "simpleui"` or by omitting `view` and letting the plugin register it for all supported views.
+
+### Support the project
+
+<a href="https://www.buymeacoffee.com/xuso" target="_blank" rel="noreferrer">
+   <img src="https://cdn.buymeacoffee.com/buttons/v2/default-green.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" />
+</a>
